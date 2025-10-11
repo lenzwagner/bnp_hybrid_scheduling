@@ -1,0 +1,16 @@
+# Core optimization
+gurobipy>=9.5.0
+
+# Data handling
+pandas>=1.3.0
+numpy>=1.21.0
+
+# Utilities
+python-dateutil>=2.8.0
+
+# Optional: For visualization (if plots are enabled)
+matplotlib>=3.4.0
+seaborn>=0.11.0
+
+# Optional: For advanced analytics
+scipy>=1.7.0
