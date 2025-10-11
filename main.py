@@ -48,6 +48,12 @@ def main():
     use_branch_and_price = True  # Set to False for standard CG
     branching_strategy = 'mp'  # 'mp' for MP variable branching, 'sp' for SP variable branching
 
+    # Visualization settings
+    visualize_tree = False  # Enable tree visualization
+    tree_layout = 'hierarchical'  # 'hierarchical' or 'radial'
+    detailed_tree = False  # Show detailed info on nodes
+    save_tree_path = 'bnp_tree.png'  # Path to save (None to not save)
+
     # ===========================
     # CONFIGURATION SUMMARY
     # ===========================
@@ -104,7 +110,8 @@ def main():
         print(" INITIALIZING BRANCH-AND-PRICE ".center(100, "="))
         print("=" * 100 + "\n")
 
-        bnp_solver = BranchAndPrice(cg_solver, branching_strategy=branching_strategy)
+        bnp_solver = BranchAndPrice(cg_solver, branching_strategy=branching_strategy, verbose=False,
+                 ip_heuristic_frequency=0)
         results = bnp_solver.solve(time_limit=3600, max_nodes=100)
 
         # Print CG statistics (from root node)
@@ -112,6 +119,18 @@ def main():
         print(" COLUMN GENERATION STATISTICS (ROOT NODE) ".center(100, "="))
         print("=" * 100 + "\n")
         cg_solver.print_statistics()
+
+        # Visualize tree
+        if visualize_tree:
+            print("\n" + "=" * 100)
+            print(" GENERATING TREE VISUALIZATION ".center(100, "="))
+            print("=" * 100 + "\n")
+
+            import os
+            os.makedirs("Pictures/Tree", exist_ok=True)
+            bnp_solver.visualize_tree(layout='hierarchical', save_path='Pictures/Tree/tree_hierarchical.png')
+            bnp_solver.visualize_tree(layout='radial', save_path='Pictures/Tree/tree_radial.png')
+            bnp_solver.visualize_tree(detailed=True, save_path='Pictures/Tree/tree_detailed.png')
 
     else:
         # Standard Column Generation
