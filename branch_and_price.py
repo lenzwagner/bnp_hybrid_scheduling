@@ -790,10 +790,11 @@ class BranchAndPrice:
                 # Log the decision process
                 decision_log_entry = {
                     'iteration': iteration,
-                    'open_nodes_state': copy.deepcopy(sorted_open_nodes),
                     'chosen_node_id': sorted_open_nodes[-1][1],
                     'chosen_node_bound': sorted_open_nodes[-1][0]
                 }
+                if self.verbose and self.detailed_logging:
+                    decision_log_entry['open_nodes_state'] = copy.deepcopy(sorted_open_nodes)
                 self.stats['bfs_decision_log'].append(decision_log_entry)
 
                 bound, current_node_id = sorted_open_nodes.pop()
