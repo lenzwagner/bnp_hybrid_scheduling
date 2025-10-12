@@ -47,6 +47,7 @@ def main():
     # Branch-and-Price settings
     use_branch_and_price = True  # Set to False for standard CG
     branching_strategy = 'mp'  # 'mp' for MP variable branching, 'sp' for SP variable branching
+    search_strategy = 'bfs' # 'dfs' for Depth-First, 'bfs' for Best-Fit-Search
 
     # Visualization settings
     visualize_tree = False  # Enable tree visualization
@@ -65,6 +66,7 @@ def main():
     print(f"  - Mode: {'Branch-and-Price' if use_branch_and_price else 'Column Generation'}")
     if use_branch_and_price:
         print(f"  - Branching Strategy: {branching_strategy.upper()}")
+        print(f"  - Search Strategy: {'Depth-First (DFS)' if search_strategy == 'dfs' else 'Best-Fit (BFS)'}")
     print(f"  - Seed: {seed}")
     print(f"  - Learning type: {app_data['learn_type'][0]}")
     print(f"  - Learning method: {learn_method}")
@@ -110,8 +112,12 @@ def main():
         print(" INITIALIZING BRANCH-AND-PRICE ".center(100, "="))
         print("=" * 100 + "\n")
 
-        bnp_solver = BranchAndPrice(cg_solver, branching_strategy=branching_strategy, verbose=True,
-                 ip_heuristic_frequency=0, early_incumbent_iteration=2)
+        bnp_solver = BranchAndPrice(cg_solver,
+                                    branching_strategy=branching_strategy,
+                                    search_strategy=search_strategy,
+                                    verbose=True,
+                                    ip_heuristic_frequency=4,
+                                    early_incumbent_iteration=1)
         results = bnp_solver.solve(time_limit=3600, max_nodes=100)
 
         # Print CG statistics (from root node)
@@ -150,6 +156,7 @@ def main():
     if use_branch_and_price:
         print(f"\nBranch-and-Price Results:")
         print(f"  - Branching strategy: {branching_strategy.upper()}")
+        print(f"  - Search strategy: {'Depth-First (DFS)' if search_strategy == 'dfs' else 'Best-Fit (BFS)'}")
         print(f"  - Nodes explored: {results['nodes_explored']}")
         print(f"  - Nodes fathomed: {results['nodes_fathomed']}")
         print(f"  - Nodes branched: {results.get('nodes_branched', 0)}")
