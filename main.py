@@ -11,7 +11,7 @@ def main():
     # ===========================
 
     # Random seed for reproducibility
-    seed = 14
+    seed = 12
 
     # Learning parameters
     app_data = {
@@ -28,8 +28,8 @@ def main():
     }
 
     # Instance parameters
-    T = 3  # Number of therapists
-    D_focus = 5  # Number of focus days
+    T = 5  # Number of therapists
+    D_focus = 10  # Number of focus days
 
     # Algorithm parameters
     dual_improvement_iter = 5  # Max Iterations without dual improvement
@@ -116,7 +116,7 @@ def main():
                                     branching_strategy=branching_strategy,
                                     search_strategy=search_strategy,
                                     verbose=True,
-                                    ip_heuristic_frequency=4,
+                                    ip_heuristic_frequency=0,
                                     early_incumbent_iteration=1)
         results = bnp_solver.solve(time_limit=3600, max_nodes=100)
 
