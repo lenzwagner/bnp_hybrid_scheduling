@@ -145,7 +145,6 @@ class MasterProblem_d:
         import math
 
         self.solRelModel()
-        self.Model.write('Frac.sol')
         obj = self.Model.ObjVal
 
         all_integer = True

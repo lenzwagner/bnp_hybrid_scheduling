@@ -277,8 +277,8 @@ class BranchAndPrice:
         is_integral, lp_bound, most_frac_info = self.cg_solver.master.check_fractionality()
 
         # Save final Root Node LP
-        self.cg_solver.master.Model.write('Final_Root.lp')
-        self._print(f"\n[Root] ✅ Saved final root node LP to: Final_Root.lp")
+        #self.cg_solver.master.Model.write('Final_Root.lp')
+        #self._print(f"\n[Root] ✅ Saved final root node LP to: Final_Root.lp")
 
         # Update root node
         root_node = self.nodes[0]
@@ -1164,12 +1164,7 @@ class BranchAndPrice:
             self._print(f"    [CG Iter {cg_iteration}] Solving master LP...")
 
             # Solve master as LP
-            if node.node_id == 18:
-                master.Model.write(f"LP_{cg_iteration}_{node.node_id}.lp")
             master.solRelModel()
-            if node.node_id == 18:
-                master.Model.write(f"_{cg_iteration}_{node.node_id}.lp")
-
             if master.Model.status != 2:  # GRB.OPTIMAL
                 self._print(f"    ⚠️  Master infeasible or unbounded at node {node.node_id}")
                 return float('inf'), False, None
