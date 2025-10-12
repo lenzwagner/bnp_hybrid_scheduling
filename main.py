@@ -110,7 +110,7 @@ def main():
         print(" INITIALIZING BRANCH-AND-PRICE ".center(100, "="))
         print("=" * 100 + "\n")
 
-        bnp_solver = BranchAndPrice(cg_solver, branching_strategy=branching_strategy, verbose=False,
+        bnp_solver = BranchAndPrice(cg_solver, branching_strategy=branching_strategy, verbose=True,
                  ip_heuristic_frequency=0)
         results = bnp_solver.solve(time_limit=3600, max_nodes=100)
 

@@ -99,11 +99,11 @@ class BranchAndPrice:
     def _print(self, *args, **kwargs):
         """Print only if verbose mode is enabled."""
         if self.verbose:
-            self._print(*args, **kwargs)
+            print(*args, **kwargs)
 
     def _print_always(self, *args, **kwargs):
         """Always print (for critical messages and final results)."""
-        self._print(*args, **kwargs)
+        print(*args, **kwargs)
 
     def _initialize_col_id_counters(self):
         """
@@ -350,8 +350,6 @@ class BranchAndPrice:
 
                 self._print(f"   New gap: {self.gap:.4%}\n")
 
-            # TODO: Fix fathoming logic
-
             return True
 
         # Check 2: Bound worse than incumbent
@@ -446,7 +444,7 @@ class BranchAndPrice:
                     ip_obj = master.Model.objVal
                     self._print(f"   Best found solution: {ip_obj:.6f}")
                     if ip_obj < self.incumbent:
-                        self.incumbent = ip_obj
+                        self.incumbent = ip_obj + 10
                         self.incumbent_solution = master.finalDicts(
                             self.cg_solver.global_solutions,
                             self.cg_solver.app_data
@@ -785,7 +783,7 @@ class BranchAndPrice:
 
                     # Update incumbent if better
                     if ip_obj < self.incumbent:
-                        self.incumbent = ip_obj + 10
+                        self.incumbent = ip_obj
                         self.incumbent_solution = cg_solver.master.finalDicts(
                             cg_solver.global_solutions,
                             cg_solver.app_data
