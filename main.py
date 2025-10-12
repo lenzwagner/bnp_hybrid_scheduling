@@ -111,7 +111,7 @@ def main():
         print("=" * 100 + "\n")
 
         bnp_solver = BranchAndPrice(cg_solver, branching_strategy=branching_strategy, verbose=True,
-                 ip_heuristic_frequency=0)
+                 ip_heuristic_frequency=0, early_incumbent_iteration=2)
         results = bnp_solver.solve(time_limit=3600, max_nodes=100)
 
         # Print CG statistics (from root node)

@@ -30,15 +30,21 @@ class BranchAndPrice:
     """
 
     def __init__(self, cg_solver, branching_strategy='mp', verbose=True,
-                 ip_heuristic_frequency=10):
+                 ip_heuristic_frequency=10, early_incumbent_iteration=0):
         """
         Initialize Branch-and-Price with existing CG solver.
 
         Args:
             cg_solver: ColumnGeneration object (already initialized with setup())
             branching_strategy: 'mp' for MP variable branching, 'sp' for SP variable branching
-            verbose: If True, print detailed progress. If False, only print final results.
-       """
+            verbose: If True, print detailed progress
+            ip_heuristic_frequency: Solve RMP as IP every N nodes (0 to disable)
+            early_incumbent_iteration: CG iteration to compute initial incumbent
+                                      - If 0 or None: solve final RMP as IP (after CG converges)
+                                      - If > 0: solve RMP as IP after this iteration,
+                                               then continue CG without further IP solves
+        """
+
         # Node management
         self.nodes = {}  # {node_id -> BnPNode}
         self.node_counter = 0
@@ -58,6 +64,10 @@ class BranchAndPrice:
 
         # IP Heuristic
         self.ip_heuristic_frequency = ip_heuristic_frequency
+
+        # Early incumbent computation
+        self.early_incumbent_iteration = early_incumbent_iteration if early_incumbent_iteration else 0
+        self.incumbent_computed_early = False
 
         # Start solutions
         self.start_x = self.cg_solver.start_x
@@ -85,14 +95,17 @@ class BranchAndPrice:
         self._print("=" * 100)
         self._print(f"CG Solver ready with {len(self.cg_solver.P_Join)} patients")
         self._print(f"Branching strategy: {self.branching_strategy.upper()}")
-        self._print("=" * 100 + "\n")
+        if self.early_incumbent_iteration > 0:
+            self._print(f"Incumbent strategy: Compute after CG iteration {self.early_incumbent_iteration}")
+        else:
+            self._print(f"Incumbent strategy: Compute after CG convergence (final RMP as IP)")
 
+        self._print("=" * 100 + "\n")
 
         # Initialize LP-folder
         import os
         os.makedirs("LPs/MP/LPs", exist_ok=True)
         os.makedirs("LPs/MP/SOLs", exist_ok=True)
-
         os.makedirs("LPs/SPs/left", exist_ok=True)
         os.makedirs("LPs/SPs/right", exist_ok=True)
 
@@ -105,51 +118,46 @@ class BranchAndPrice:
         """Always print (for critical messages and final results)."""
         print(*args, **kwargs)
 
-    def _initialize_col_id_counters(self):
+    def _early_incumbent_callback(self, iteration, cg_solver):
         """
-        Initialize global column ID counters from initial CG solution.
+        Callback executed after each CG iteration at root node.
 
-        Scans all existing columns in cg_solver.global_solutions
-        and sets next_col_id to max(existing) + 1 for each profile.
-        """
-        self._print("\n[Init] Initializing global column ID counters...")
-
-        for profile in self.cg_solver.P_Join:
-            # Find all column IDs for this profile
-            profile_col_ids = [
-                col_id for (p, col_id) in self.cg_solver.global_solutions.get('x', {}).keys()
-                if p == profile
-            ]
-
-            if profile_col_ids:
-                next_id = max(profile_col_ids) + 1
-            else:
-                next_id = 1
-
-            self.next_col_id_per_profile[profile] = next_id
-            self._print(f"  Profile {profile}: next_col_id = {next_id} (found {len(profile_col_ids)} existing columns)")
-
-        self._print(f"[Init] Column ID counters initialized for {len(self.next_col_id_per_profile)} profiles\n")
-
-    def get_next_col_id(self, profile):
-        """
-        Get the next available global column ID for a profile.
-
-        This ensures column IDs are unique across the entire B&P tree.
+        If early_incumbent_iteration is set and we reach that iteration,
+        solve the RMP as IP to get the initial incumbent.
 
         Args:
-            profile: Profile index
-
-        Returns:
-            int: Next available column ID
+            iteration: Current CG iteration number
+            cg_solver: Reference to ColumnGeneration instance
         """
-        if profile not in self.next_col_id_per_profile:
-            self.next_col_id_per_profile[profile] = 1
+        # Check if we should compute early incumbent
+        if self.early_incumbent_iteration == 0:
+            return  # No early incumbent requested
 
-        col_id = self.next_col_id_per_profile[profile]
-        self.next_col_id_per_profile[profile] += 1
+        if iteration != self.early_incumbent_iteration:
+            return  # Not the right iteration yet
 
-        return col_id
+        if self.incumbent_computed_early:
+            return  # Already computed
+
+        # Compute incumbent at this iteration
+        self._print(f"\n{'─' * 100}")
+        self._print(f" COMPUTING EARLY INCUMBENT (after CG iteration {iteration}) ".center(100, "─"))
+        self._print(f"{'─' * 100}")
+        self._print(f"Solving RMP as IP with columns generated so far...")
+        self._print(f"CG will continue afterwards until convergence.\n")
+
+        success = self._solve_rmp_as_ip(cg_solver.master, context="Early Incumbent")
+
+        if success:
+            self.incumbent_computed_early = True
+            self._print(f"\n✅ Early incumbent computed successfully!")
+            self._print(f"   Incumbent: {self.incumbent:.6f}")
+            self._print(f"   CG will continue to convergence...\n")
+        else:
+            self._print(f"\n⚠️  Early incumbent computation unsuccessful")
+            self._print(f"   CG will continue and we'll try again after convergence.\n")
+
+        self._print(f"{'─' * 100}\n")
 
     def create_root_node(self):
         """
@@ -247,7 +255,10 @@ class BranchAndPrice:
         """
         Solve root node via Column Generation.
 
-        After CG converges, solve master as IP to get initial incumbent.
+        Depending on early_incumbent_iteration:
+        - If 0: Solve RMP as IP after CG converges
+        - If > 0: RMP is solved as IP during CG (via callback),
+                  then solve final LP after convergence
 
         Returns:
             tuple: (lp_bound, is_integral, most_frac_info)
@@ -256,29 +267,41 @@ class BranchAndPrice:
         self._print(" SOLVING ROOT NODE ".center(100, "="))
         self._print("=" * 100 + "\n")
 
-        # REMOVED: callback for incumbent computation during CG
-        # We compute it AFTER CG converges instead
+        # Setup callback if early incumbent is requested
+        if self.early_incumbent_iteration > 0:
+            self.cg_solver.callback_after_iteration = self._early_incumbent_callback
+            self._print(
+                f"[Root] Early incumbent will be computed after CG iteration {self.early_incumbent_iteration}\n")
+        else:
+            self.cg_solver.callback_after_iteration = None
+            self._print(f"[Root] Incumbent will be computed after CG convergence\n")
 
         # Solve with Column Generation
         self.cg_solver.solve_cg()
 
-        # After CG converges: compute initial incumbent by solving RMP as IP
-        self._print("\n" + "=" * 100)
-        self._print(" COMPUTING INITIAL INCUMBENT ".center(100, "="))
-        self._print("=" * 100)
-        self._print("Column Generation converged. All columns generated.")
-        self._print("Solving Root Master Problem as IP to get initial upper bound...\n")
+        # After CG converges: Check if we need to compute incumbent
+        if not self.incumbent_computed_early:
+            # No early incumbent, or it failed → compute now from final RMP
+            self._print("\n" + "=" * 100)
+            self._print(" COMPUTING FINAL INCUMBENT ".center(100, "="))
+            self._print("=" * 100)
+            self._print("Column Generation converged. All columns generated.")
+            self._print("Solving final Root Master Problem as IP to get initial upper bound...\n")
 
-        self._compute_root_incumbent()
+            self._compute_final_incumbent()
+        else:
+            # Early incumbent was computed → just note it
+            self._print("\n" + "=" * 100)
+            self._print(" USING EARLY INCUMBENT ".center(100, "="))
+            self._print("=" * 100)
+            self._print(f"Incumbent was already computed at iteration {self.early_incumbent_iteration}")
+            self._print(f"Current incumbent: {self.incumbent:.6f}")
+            self._print("=" * 100 + "\n")
 
-        # After incumbent computation: Get final LP results
+        # Final LP relaxation check
         self._print("\n[Root] Final LP relaxation check...")
         self.cg_solver.master.solRelModel()
         is_integral, lp_bound, most_frac_info = self.cg_solver.master.check_fractionality()
-
-        # Save final Root Node LP
-        #self.cg_solver.master.Model.write('Final_Root.lp')
-        #self._print(f"\n[Root] ✅ Saved final root node LP to: Final_Root.lp")
 
         # Update root node
         root_node = self.nodes[0]
@@ -286,7 +309,7 @@ class BranchAndPrice:
         root_node.is_integral = is_integral
         root_node.most_fractional_var = most_frac_info
 
-        # Update root node's column pool with ALL generated columns
+        # Update root node's column pool
         self._update_node_column_pool(root_node)
 
         # Update node status
@@ -299,7 +322,8 @@ class BranchAndPrice:
             self._print(f"\n⚠️  ROOT NODE IS FRACTIONAL (LP)")
 
         self._print(f"   LP Bound: {lp_bound:.6f}")
-        self._print(f"   Incumbent: {self.incumbent:.6f}" if self.incumbent < float('inf') else "   Incumbent: None")
+        self._print(
+            f"   Incumbent: {self.incumbent:.6f}" if self.incumbent < float('inf') else "   Incumbent: None")
 
         # Update global bounds
         self.best_lp_bound = lp_bound
@@ -313,6 +337,141 @@ class BranchAndPrice:
         self._print(f"{'=' * 100}\n")
 
         return lp_bound, is_integral, most_frac_info
+
+    def _compute_final_incumbent(self):
+        """
+        Compute incumbent from final RMP after CG convergence.
+
+        This is the default behavior (when early_incumbent_iteration = 0).
+        """
+        master = self.cg_solver.master
+        success = self._solve_rmp_as_ip(master, context="Final Incumbent")
+
+        if success:
+            self._print(f"\n{'=' * 100}")
+            self._print("✅ FINAL INCUMBENT FOUND ".center(100, "="))
+            self._print(f"{'=' * 100}")
+            self._print(f"IP Objective:     {self.incumbent:.6f}")
+            self._print(f"LP Bound (root):  {master.Model.objBound:.6f}" if hasattr(master.Model, 'objBound') else "")
+            self._print(f"Gap:              {self.gap:.4%}")
+            self._print(f"{'=' * 100}\n")
+        else:
+            self._print(f"\n⚠️  Could not compute final incumbent")
+
+    def _solve_rmp_as_ip(self, master, context="IP Solve"):
+        """
+        Solve the Restricted Master Problem as Integer Program.
+
+        This is a helper method used by both early and final incumbent computation.
+
+        Args:
+            master: MasterProblem_d instance
+            context: String describing the context (for logging)
+
+        Returns:
+            bool: True if successful and incumbent was updated
+        """
+        self._print("=" * 100)
+        self._print(f"{context}: Solving RMP as Integer Program...".center(100))
+        self._print("=" * 100 + "\n")
+
+        self.stats['ip_solves'] += 1
+
+        try:
+            # Save current variable types
+            original_vtypes = {}
+            for var in master.lmbda.values():
+                original_vtypes[var.VarName] = var.VType
+                var.VType = gu.GRB.INTEGER
+
+            # Solve as IP
+            master.Model.Params.OutputFlag = 1
+            master.Model.Params.TimeLimit = 300  # 5 minute time limit
+            master.Model.update()
+
+            self._print(f"[{context}] Starting optimization...")
+            master.Model.optimize()
+
+            success = False
+            result_obj = float('inf')
+
+            # Check solution status
+            if master.Model.status == gu.GRB.OPTIMAL:
+                ip_obj = master.Model.objVal
+
+                # Update incumbent if better
+                if ip_obj < self.incumbent:
+                    self.incumbent = ip_obj
+                    self.incumbent_solution = master.finalDicts(
+                        self.cg_solver.global_solutions,
+                        self.cg_solver.app_data
+                    )
+                    self.stats['incumbent_updates'] += 1
+                    self.update_gap()
+
+                    self._print(f"\n✅ New incumbent found: {self.incumbent:.6f}")
+                    self._print(f"   Gap: {self.gap:.4%}\n")
+
+                    success = True
+                    result_obj = ip_obj
+                else:
+                    self._print(f"\n⚠️  IP solution not better than current incumbent")
+                    self._print(f"   IP Objective:      {ip_obj:.6f}")
+                    self._print(f"   Current Incumbent: {self.incumbent:.6f}\n")
+                    success = False
+                    result_obj = ip_obj
+
+            elif master.Model.status == gu.GRB.TIME_LIMIT:
+                self._print(f"\n⚠️  IP solve hit time limit")
+                if master.Model.SolCount > 0:
+                    ip_obj = master.Model.objVal
+                    self._print(f"   Best found solution: {ip_obj:.6f}")
+                    if ip_obj < self.incumbent:
+                        self.incumbent = ip_obj
+                        self.incumbent_solution = master.finalDicts(
+                            self.cg_solver.global_solutions,
+                            self.cg_solver.app_data
+                        )
+                        self.stats['incumbent_updates'] += 1
+                        self.update_gap()
+                        self._print(f"   Updated incumbent: {self.incumbent:.6f}\n")
+                        success = True
+                        result_obj = ip_obj
+                    else:
+                        success = False
+                        result_obj = ip_obj
+                else:
+                    self._print(f"   No feasible solution found within time limit\n")
+                    success = False
+                    result_obj = float('inf')
+
+            else:
+                self._print(f"❌ IP solve unsuccessful (status={master.Model.status})")
+                success = False
+                result_obj = float('inf')
+
+            # Restore continuous relaxation
+            for var in master.lmbda.values():
+                var.VType = original_vtypes[var.VarName]
+
+            master.Model.Params.OutputFlag = 0
+            master.Model.Params.TimeLimit = float('inf')
+            master.Model.update()
+
+            return success
+
+        except Exception as e:
+            self._print(f"❌ Error during {context}: {e}\n")
+
+            # Restore original variable types
+            for var in master.lmbda.values():
+                if var.VarName in original_vtypes:
+                    var.VType = original_vtypes[var.VarName]
+
+            master.Model.Params.OutputFlag = 0
+            master.Model.update()
+
+            return False
 
     def should_fathom(self, node):
         """
