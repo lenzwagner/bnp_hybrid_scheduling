@@ -2,7 +2,7 @@ import sys
 import time
 from bnp_node import BnPNode
 import gurobipy as gu
-
+import copy
 
 
 class BranchAndPrice:
@@ -29,7 +29,7 @@ class BranchAndPrice:
         cg_solver: Reference to Column Generation solver
     """
 
-    def __init__(self, cg_solver, branching_strategy='mp', verbose=True,
+    def __init__(self, cg_solver, branching_strategy='mp', search_strategy='dfs', verbose=True,
                  ip_heuristic_frequency=10, early_incumbent_iteration=0):
         """
         Initialize Branch-and-Price with existing CG solver.
@@ -37,6 +37,7 @@ class BranchAndPrice:
         Args:
             cg_solver: ColumnGeneration object (already initialized with setup())
             branching_strategy: 'mp' for MP variable branching, 'sp' for SP variable branching
+            search_strategy: 'dfs' for Depth-First-Search or 'bfs' for Best-Fit-Search.
             verbose: If True, print detailed progress
             ip_heuristic_frequency: Solve RMP as IP every N nodes (0 to disable)
             early_incumbent_iteration: CG iteration to compute initial incumbent
@@ -48,7 +49,7 @@ class BranchAndPrice:
         # Node management
         self.nodes = {}  # {node_id -> BnPNode}
         self.node_counter = 0
-        self.open_nodes = []  # List of open node IDs
+        self.open_nodes = []  # For DFS: list of IDs. For BFS: list of (bound, ID)
 
         # Output control
         self.verbose = verbose
@@ -62,6 +63,10 @@ class BranchAndPrice:
         # Reference to CG solver
         self.cg_solver = cg_solver
 
+        # Search and Branching Configuration
+        self.branching_strategy = branching_strategy
+        self.search_strategy = search_strategy
+
         # IP Heuristic
         self.ip_heuristic_frequency = ip_heuristic_frequency
 
@@ -73,9 +78,6 @@ class BranchAndPrice:
         self.start_x = self.cg_solver.start_x
         self.start_los = self.cg_solver.start_los
 
-        # Branching Configuration
-        self.branching_strategy = branching_strategy  # 'mp' or 'sp'
-
         # Statistics
         self.stats = {
             'nodes_explored': 0,
@@ -84,7 +86,9 @@ class BranchAndPrice:
             'total_cg_iterations': 0,
             'total_time': 0,
             'incumbent_updates': 0,
-            'ip_solves': 0
+            'ip_solves': 0,
+            'node_processing_order': [],
+            'bfs_decision_log': []
         }
 
         # Timing
@@ -95,6 +99,7 @@ class BranchAndPrice:
         self._print("=" * 100)
         self._print(f"CG Solver ready with {len(self.cg_solver.P_Join)} patients")
         self._print(f"Branching strategy: {self.branching_strategy.upper()}")
+        self._print(f"Search strategy: {'Depth-First (DFS)' if self.search_strategy == 'dfs' else 'Best-Fit (BFS)'}")
         if self.early_incumbent_iteration > 0:
             self._print(f"Incumbent strategy: Compute after CG iteration {self.early_incumbent_iteration}")
         else:
@@ -214,7 +219,11 @@ class BranchAndPrice:
 
         # Store node
         self.nodes[0] = node
-        self.open_nodes.append(0)
+        if self.search_strategy == 'dfs':
+            self.open_nodes.append(0)
+        else:  # bfs
+            # Root node has no initial bound yet, will be computed in solve_root_node
+            self.open_nodes.append((float('inf'), 0))
 
         self._print(f"\n{'=' * 100}")
         self._print(" ROOT NODE CREATED ".center(100, "="))
@@ -266,6 +275,9 @@ class BranchAndPrice:
         self._print("\n" + "=" * 100)
         self._print(" SOLVING ROOT NODE ".center(100, "="))
         self._print("=" * 100 + "\n")
+
+        # Log processing of root node
+        self.stats['node_processing_order'].append(0)
 
         # Setup callback if early incumbent is requested
         if self.early_incumbent_iteration > 0:
@@ -516,7 +528,7 @@ class BranchAndPrice:
             node.status = 'fathomed'
             node.fathom_reason = 'bound'
             self._print(f"   Node {node.node_id} fathomed by bound: "
-                  f"LP={node.lp_bound:.6f} >= UB={self.incumbent:.6f}")
+                        f"LP={node.lp_bound:.6f} >= UB={self.incumbent:.6f}")
             return True
 
         # Check 3: Infeasible
@@ -584,7 +596,8 @@ class BranchAndPrice:
                     self._print("✅ INITIAL INCUMBENT FOUND ".center(100, "="))
                     self._print(f"{'=' * 100}")
                     self._print(f"IP Objective:     {self.incumbent:.6f}")
-                    self._print(f"LP Bound (root):  {master.Model.objBound:.6f}" if hasattr(master.Model, 'objBound') else "")
+                    self._print(
+                        f"LP Bound (root):  {master.Model.objBound:.6f}" if hasattr(master.Model, 'objBound') else "")
                     self._print(f"Gap:              {self.gap:.4%}")
                     self._print(f"{'=' * 100}\n")
 
@@ -684,15 +697,24 @@ class BranchAndPrice:
         # PHASE 1: CREATE AND SOLVE ROOT NODE
         # ========================================
         root_node = self.create_root_node()
+        # For 'bfs', open_nodes contains a tuple, so we extract the ID
+        if self.search_strategy == 'bfs':
+            self.open_nodes.pop()  # Remove placeholder
+
         lp_bound, is_integral, frac_info = self.solve_root_node()
         self.stats['nodes_explored'] = 1
+
+        # Add root node to open list with its solved bound for 'bfs'
+        if self.search_strategy == 'bfs' and not is_integral:
+            self.open_nodes.append((lp_bound, 0))
 
         # Check if root can be fathomed
         if self.should_fathom(root_node):
             self._print(f"✅ Root node fathomed: {root_node.fathom_reason}")
             self._print(f"   Solution is optimal!\n")
             self.stats['nodes_fathomed'] = 1
-            self.open_nodes.remove(0)
+            if self.open_nodes:
+                self.open_nodes.pop()
             self._finalize_and_print_results()
             return self._get_results_dict()
 
@@ -700,6 +722,10 @@ class BranchAndPrice:
         self._print(f"\n{'=' * 100}")
         self._print(" ROOT NODE REQUIRES BRANCHING ".center(100, "="))
         self._print(f"{'=' * 100}\n")
+
+        # Remove root from open nodes before branching
+        if self.open_nodes:
+            self.open_nodes.pop()
 
         # Branch on root
         branching_type, branching_info = self.select_branching_candidate(root_node)
@@ -718,7 +744,6 @@ class BranchAndPrice:
         # Mark root as branched
         root_node.status = 'branched'
         self.stats['nodes_branched'] += 1
-        self.open_nodes.remove(0)  # Remove root from open nodes
 
         # ========================================
         # PHASE 2: MAIN BRANCH-AND-PRICE LOOP
@@ -755,10 +780,34 @@ class BranchAndPrice:
                 break
 
             # ========================================
-            # SELECT NEXT NODE (DFS: LIFO)
+            # SELECT NEXT NODE
             # ========================================
-            current_node_id = self.open_nodes.pop()
-            self._print(f"   🔎 Open nodes stack: {self.open_nodes}")
+            if self.search_strategy == 'bfs':
+                # Best-first: sort by bound (ascending) and pop the best (lowest bound)
+                # We sort descending and pop from the end for efficiency (O(1))
+                sorted_open_nodes = sorted(self.open_nodes, key=lambda x: x[0], reverse=True)
+
+                # Log the decision process
+                decision_log_entry = {
+                    'iteration': iteration,
+                    'open_nodes_state': copy.deepcopy(sorted_open_nodes),
+                    'chosen_node_id': sorted_open_nodes[-1][1],
+                    'chosen_node_bound': sorted_open_nodes[-1][0]
+                }
+                self.stats['bfs_decision_log'].append(decision_log_entry)
+
+                bound, current_node_id = sorted_open_nodes.pop()
+                self.open_nodes = sorted_open_nodes  # update the list
+                self._print(f"   [BFS] Selected Node {current_node_id} with initial bound {bound:.4f}")
+
+            else:  # DFS (default)
+                # DFS: pop the last added node (LIFO)
+                current_node_id = self.open_nodes.pop()
+
+            # Log the processing order for all strategies
+            self.stats['node_processing_order'].append(current_node_id)
+
+            self._print(f"   🔎 Open nodes: {self.open_nodes}")
             current_node = self.nodes[current_node_id]
 
             self._print(f"\n{'╔' + '═' * 98 + '╗'}")
@@ -805,7 +854,6 @@ class BranchAndPrice:
                 self._print(f"   └─ Open nodes: {len(self.open_nodes)}\n")
 
                 continue
-
 
             # ========================================
             # NODE NOT FATHOMED → BRANCH
@@ -858,7 +906,6 @@ class BranchAndPrice:
         self._finalize_and_print_results()
         return self._get_results_dict()
 
-
     def _print_final_results(self):
         """Print final results."""
         self._print("\n" + "=" * 100)
@@ -868,7 +915,8 @@ class BranchAndPrice:
         self._print(f"")
         self._print(f"Bounds:")
         self._print(f"  LP Bound (LB):  {self.best_lp_bound:.6f}")
-        self._print(f"  Incumbent (UB): {self.incumbent:.6f}" if self.incumbent < float('inf') else "  Incumbent (UB): None")
+        self._print(
+            f"  Incumbent (UB): {self.incumbent:.6f}" if self.incumbent < float('inf') else "  Incumbent (UB): None")
         self._print(f"  Gap:            {self.gap:.4%}" if self.gap < float('inf') else "  Gap:            ∞")
         self._print(f"")
         self._print(f"Statistics:")
@@ -886,7 +934,8 @@ class BranchAndPrice:
         self._print(f"  LP Bound:       {root.lp_bound:.6f}")
         if root.most_fractional_var:
             frac = root.most_fractional_var
-            self._print(f"  Most Frac Var:  {frac['var_name']} = {frac['value']:.6f} (dist={frac['fractionality']:.6f})")
+            self._print(
+                f"  Most Frac Var:  {frac['var_name']} = {frac['value']:.6f} (dist={frac['fractionality']:.6f})")
         if root.fathom_reason:
             self._print(f"  Fathom Reason:  {root.fathom_reason}")
         self._print("=" * 100 + "\n")
@@ -1133,7 +1182,6 @@ class BranchAndPrice:
         self._print(f"  Left:  Lambda[{n},{a}] <= {floor_val}")
         self._print(f"  Right: Lambda[{n},{a}] >= {ceil_val}")
 
-
         # Get original schedule for no-good cut
         original_schedule = None
         if (n, a) in parent_node.column_pool:
@@ -1160,12 +1208,12 @@ class BranchAndPrice:
             node_id=self.node_counter,
             parent_id=parent_node.node_id,
             depth=parent_node.depth + 1,
-            path = parent_node.path + 'l'
+            path=parent_node.path + 'l'
         )
 
-        #if left_child.depth == 3:
-            #self._print(f"\n🛑 DEBUG STOPPER: Reached depth {left_child.depth}")
-            #self._print(f"Path: {left_child.path}")
+        # if left_child.depth == 3:
+        # self._print(f"\n🛑 DEBUG STOPPER: Reached depth {left_child.depth}")
+        # self._print(f"Path: {left_child.path}")
 
         # Create left branching constraint
         from branching_constraints import MPVariableBranching
@@ -1213,16 +1261,32 @@ class BranchAndPrice:
         self._inherit_columns_from_parent(right_child, parent_node)
         self._save_subproblem_for_branching_profile(right_child, n, False)
 
+        # -------------------------
+        # EVALUATE AND STORE NODES
+        # -------------------------
+        if self.search_strategy == 'bfs':
+            # Solve initial LP to get a bound for node selection
+            self._print("\n  [BFS] Evaluating child nodes...")
+            left_bound = self._solve_initial_lp(left_child)
+            right_bound = self._solve_initial_lp(right_child)
+            left_child.lp_bound = left_bound
+            right_child.lp_bound = right_bound
+            self._print(f"    - Left Child (Node {left_child.node_id}) initial LP bound: {left_bound:.4f}")
+            self._print(f"    - Right Child (Node {right_child.node_id}) initial LP bound: {right_bound:.4f}")
 
-        # -------------------------
-        # STORE NODES
-        # -------------------------
+        # Store nodes in the main dictionary
         self.nodes[left_child.node_id] = left_child
         self.nodes[right_child.node_id] = right_child
 
-        # Add to open nodes (DFS: right first, then left, so left is processed first)
-        self.open_nodes.append(right_child.node_id)
-        self.open_nodes.append(left_child.node_id)
+        # Add to open nodes list based on the search strategy
+        if self.search_strategy == 'bfs':
+            if left_child.lp_bound < float('inf'):
+                self.open_nodes.append((left_child.lp_bound, left_child.node_id))
+            if right_child.lp_bound < float('inf'):
+                self.open_nodes.append((right_child.lp_bound, right_child.node_id))
+        else:  # DFS
+            self.open_nodes.append(right_child.node_id)
+            self.open_nodes.append(left_child.node_id)
 
         # Update parent status
         parent_node.status = 'branched'
@@ -1234,6 +1298,22 @@ class BranchAndPrice:
         self.stats['nodes_branched'] += 1
 
         return left_child, right_child
+
+    def _solve_initial_lp(self, node):
+        """
+        Solves the master problem for a node once as an LP without CG.
+        This provides a quick initial lower bound for the 'bfs' strategy.
+        """
+        master = self._build_master_for_node(node)
+        master.Model.setParam('OutputFlag', 0)  # Suppress Gurobi output for this solve
+        master.solRelModel()
+        master.Model.setParam('OutputFlag', 1)  # Re-enable for subsequent solves
+
+        if master.Model.status == gu.GRB.OPTIMAL:
+            return master.Model.ObjVal
+        else:
+            # If infeasible or unbounded, return infinity
+            return float('inf')
 
     def _inherit_columns_from_parent(self, child_node, parent_node):
         """
@@ -1431,7 +1511,6 @@ class BranchAndPrice:
         # Load columns
         self._print(f"    [Master] Loading {len(node.column_pool)} columns from pool...")
 
-
         for (profile, col_id), col_data in node.column_pool.items():
 
             if col_id >= 2:
@@ -1465,7 +1544,8 @@ class BranchAndPrice:
                         col_data, profile, col_id, node.branching_constraints
                     )
                     col_coefs = col_coefs + branching_coefs
-                    self._print(f"      [Column {profile},{col_id}] Added {len(branching_coefs)} branching coefficients")
+                    self._print(
+                        f"      [Column {profile},{col_id}] Added {len(branching_coefs)} branching coefficients")
 
                 master.addLambdaVar(profile, col_id, col_coefs, los_list)
             master.Model.update()
@@ -1587,8 +1667,8 @@ class BranchAndPrice:
                     branching_duals[key] = dual_val
 
                     self._print(f"      [Duals] SP branching constraint at level {constraint.level}: "
-                          f"x[{constraint.profile},{constraint.agent},{constraint.period}]={constraint.value}, "
-                          f"dual={dual_val:.6f}")
+                                f"x[{constraint.profile},{constraint.agent},{constraint.period}]={constraint.value}, "
+                                f"dual={dual_val:.6f}")
                 except:
                     pass  # Constraint not binding or no dual available
 
@@ -1725,7 +1805,8 @@ class BranchAndPrice:
             los_list
         )
 
-        self._print(f"        [Column] Added column ({profile}, {col_id}) with reduced cost {subproblem.Model.objVal:.6f}")
+        self._print(
+            f"        [Column] Added column ({profile}, {col_id}) with reduced cost {subproblem.Model.objVal:.6f}")
 
     def branch_on_sp_variable(self, parent_node, branching_info):
         """
@@ -1783,7 +1864,6 @@ class BranchAndPrice:
         self._inherit_columns_from_parent(left_child, parent_node)
         self._save_subproblem_for_branching_profile(left_child, n, True)
 
-
         # -------------------------
         # RIGHT CHILD
         # -------------------------
@@ -1809,15 +1889,33 @@ class BranchAndPrice:
         self._inherit_columns_from_parent(right_child, parent_node)
         self._save_subproblem_for_branching_profile(right_child, n, False)
 
+        # -------------------------
+        # EVALUATE AND STORE NODES
+        # -------------------------
+        if self.search_strategy == 'bfs':
+            # Solve initial LP to get a bound for node selection
+            self._print("\n  [BFS] Evaluating child nodes...")
+            left_bound = self._solve_initial_lp(left_child)
+            right_bound = self._solve_initial_lp(right_child)
+            left_child.lp_bound = left_bound
+            right_child.lp_bound = right_bound
+            self._print(f"    - Left Child (Node {left_child.node_id}) initial LP bound: {left_bound:.4f}")
+            self._print(f"    - Right Child (Node {right_child.node_id}) initial LP bound: {right_bound:.4f}")
 
-        # -------------------------
-        # STORE NODES
-        # -------------------------
+        # Store nodes in the main dictionary
         self.nodes[left_child.node_id] = left_child
         self.nodes[right_child.node_id] = right_child
 
-        self.open_nodes.append(right_child.node_id)
-        self.open_nodes.append(left_child.node_id)
+        # Add to open nodes list based on the search strategy
+        if self.search_strategy == 'bfs':
+            if left_child.lp_bound < float('inf'):
+                self.open_nodes.append((left_child.lp_bound, left_child.node_id))
+            if right_child.lp_bound < float('inf'):
+                self.open_nodes.append((right_child.lp_bound, right_child.node_id))
+        else:  # DFS
+            # Add to open nodes (DFS: right first, then left, so left is processed first)
+            self.open_nodes.append(right_child.node_id)
+            self.open_nodes.append(left_child.node_id)
 
         parent_node.status = 'branched'
 
@@ -1908,13 +2006,14 @@ class BranchAndPrice:
             self._print(f"  ... and {len(col_per_profile) - 5} more profiles")
         self._print()
 
-    def _save_subproblem_for_branching_profile(self, node, profile, isLeft = True):
+    def _save_subproblem_for_branching_profile(self, node, profile, isLeft=True):
         """
         Build and save the subproblem for a given profile at a node (without solving it).
         Used to debug or inspect the SP used for branching.
         """
         # Dummy duals – since we only want the model structure, not pricing
-        dummy_duals_td = {(t, d): 0.0 for t in list(range(1, max(key[1] for key in self.start_x.keys()) + 1)) for d in list(range(1, max(key[2] for key in self.start_x.keys()) + 1))}
+        dummy_duals_td = {(t, d): 0.0 for t in list(range(1, max(key[1] for key in self.start_x.keys()) + 1)) for d in
+                          list(range(1, max(key[2] for key in self.start_x.keys()) + 1))}
         dummy_duals_p = {p: 0.0 for p in self.cg_solver.P_Join}
 
         # Determine next col_id (not critical for model structure)
@@ -2007,6 +2106,8 @@ class BranchAndPrice:
         # Algorithm statistics
         self._print("Algorithm Statistics:")
         self._print(f"  Branching Strategy:   {self.branching_strategy.upper()}")
+        self._print(
+            f"  Search Strategy:      {'Depth-First (DFS)' if self.search_strategy == 'dfs' else 'Best-Fit (BFS)'}")
         self._print(f"  Total CG Iterations:  {self.stats['total_cg_iterations']}")
         self._print(f"  IP Solves:            {self.stats['ip_solves']}")
         self._print(f"  Incumbent Updates:    {self.stats['incumbent_updates']}")
@@ -2040,6 +2141,28 @@ class BranchAndPrice:
                 self._print(f"  {status.capitalize():15}: {count}")
 
         self._print()
+
+        # --- NEW: Detailed Processing Log ---
+        if self.stats['node_processing_order']:
+            self._print_always("-" * 100)
+            self._print_always(" NODE PROCESSING LOG ".center(100, "-"))
+            self._print_always("-" * 100)
+
+            order_str = " -> ".join(map(str, self.stats['node_processing_order']))
+            self._print_always(f"Processing Order: {order_str}\n")
+
+            if self.search_strategy == 'bfs' and self.stats['bfs_decision_log']:
+                self._print_always("BFS Decision Breakdown:")
+                for log in self.stats['bfs_decision_log']:
+                    self._print_always(f"  Iteration {log['iteration']}:")
+
+                    # Format the list of open nodes for printing
+                    open_nodes_str = ", ".join(
+                        [f"(Node {nid}, LP {b:.2f})" for b, nid in reversed(log['open_nodes_state'])])
+                    self._print_always(f"    - Open Nodes (Ranked): [{open_nodes_str}]")
+                    self._print_always(
+                        f"    - Decision: Chose Node {log['chosen_node_id']} with the best LP bound of {log['chosen_node_bound']:.4f}.")
+            self._print_always("-" * 100)
 
         # Solution quality
         if self.incumbent < float('inf') and self.incumbent_solution:
@@ -2241,7 +2364,13 @@ class BranchAndPrice:
         fathomed_count = 0
         nodes_to_remove = []
 
-        for node_id in self.open_nodes:
+        # The items in open_nodes depend on the strategy
+        if self.search_strategy == 'bfs':
+            nodes_to_check = [node_id for _, node_id in self.open_nodes]
+        else:  # dfs
+            nodes_to_check = self.open_nodes
+
+        for node_id in nodes_to_check:
             node = self.nodes[node_id]
 
             # Check if node's LP bound is worse than incumbent
@@ -2255,7 +2384,10 @@ class BranchAndPrice:
                 self._print(f"     Fathomed node {node_id}: LP={node.lp_bound:.6f} >= Inc={self.incumbent:.6f}")
 
         # Remove from open nodes
-        for node_id in nodes_to_remove:
-            self.open_nodes.remove(node_id)
+        if nodes_to_remove:
+            if self.search_strategy == 'bfs':
+                self.open_nodes = [(b, i) for b, i in self.open_nodes if i not in nodes_to_remove]
+            else:  # dfs
+                self.open_nodes = [i for i in self.open_nodes if i not in nodes_to_remove]
 
         return fathomed_count
