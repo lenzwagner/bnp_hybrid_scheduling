@@ -119,45 +119,27 @@ class BranchAndPrice:
         print(*args, **kwargs)
 
     def _early_incumbent_callback(self, iteration, cg_solver):
-        """
-        Callback executed after each CG iteration at root node.
-
-        If early_incumbent_iteration is set and we reach that iteration,
-        solve the RMP as IP to get the initial incumbent.
-
-        Args:
-            iteration: Current CG iteration number
-            cg_solver: Reference to ColumnGeneration instance
-        """
-        # Check if we should compute early incumbent
-        if self.early_incumbent_iteration == 0:
-            return  # No early incumbent requested
-
+        """Callback to compute incumbent after specific CG iteration."""
         if iteration != self.early_incumbent_iteration:
-            return  # Not the right iteration yet
+            return
 
         if self.incumbent_computed_early:
-            return  # Already computed
+            return
 
-        # Compute incumbent at this iteration
         self._print(f"\n{'─' * 100}")
         self._print(f" COMPUTING EARLY INCUMBENT (after CG iteration {iteration}) ".center(100, "─"))
-        self._print(f"{'─' * 100}")
-        self._print(f"Solving RMP as IP with columns generated so far...")
-        self._print(f"CG will continue afterwards until convergence.\n")
 
+        # Just call the central method
         success = self._solve_rmp_as_ip(cg_solver.master, context="Early Incumbent")
+        self.incumbent_computed_early = success
 
-        if success:
-            self.incumbent_computed_early = True
-            self._print(f"\n✅ Early incumbent computed successfully!")
-            self._print(f"   Incumbent: {self.incumbent:.6f}")
-            self._print(f"   CG will continue to convergence...\n")
-        else:
-            self._print(f"\n⚠️  Early incumbent computation unsuccessful")
-            self._print(f"   CG will continue and we'll try again after convergence.\n")
+    def _compute_final_incumbent(self):
+        """Compute incumbent from final RMP after CG convergence."""
+        self._print("\n" + "=" * 100)
+        self._print(" COMPUTING FINAL INCUMBENT ".center(100, "="))
 
-        self._print(f"{'─' * 100}\n")
+        # Just call the central method
+        self._solve_rmp_as_ip(self.cg_solver.master, context="Final Incumbent")
 
     def create_root_node(self):
         """
@@ -338,31 +320,12 @@ class BranchAndPrice:
 
         return lp_bound, is_integral, most_frac_info
 
-    def _compute_final_incumbent(self):
-        """
-        Compute incumbent from final RMP after CG convergence.
-
-        This is the default behavior (when early_incumbent_iteration = 0).
-        """
-        master = self.cg_solver.master
-        success = self._solve_rmp_as_ip(master, context="Final Incumbent")
-
-        if success:
-            self._print(f"\n{'=' * 100}")
-            self._print("✅ FINAL INCUMBENT FOUND ".center(100, "="))
-            self._print(f"{'=' * 100}")
-            self._print(f"IP Objective:     {self.incumbent:.6f}")
-            self._print(f"LP Bound (root):  {master.Model.objBound:.6f}" if hasattr(master.Model, 'objBound') else "")
-            self._print(f"Gap:              {self.gap:.4%}")
-            self._print(f"{'=' * 100}\n")
-        else:
-            self._print(f"\n⚠️  Could not compute final incumbent")
-
     def _solve_rmp_as_ip(self, master, context="IP Solve"):
         """
         Solve the Restricted Master Problem as Integer Program.
 
-        This is a helper method used by both early and final incumbent computation.
+        This is the ONLY method that handles IP solving.
+        Called by both early incumbent and final incumbent computation.
 
         Args:
             master: MasterProblem_d instance

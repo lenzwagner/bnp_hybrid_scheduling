@@ -156,35 +156,31 @@ class MasterProblem_d:
         for (n, a), var in self.lmbda.items():
             x_val = var.X
 
-            # Berechne Distanzen zu floor und ceil
+            # Calculate distance between floor and ceil
             floor_val = math.floor(x_val)
             ceil_val = math.ceil(x_val)
             dist_to_floor = x_val - floor_val
             dist_to_ceil = ceil_val - x_val
 
-            # Fraktionalität ist die minimale Distanz zum nächsten Integer
+            # Fractionality is the minimum distance to nearest integer
             frac_part = min(dist_to_floor, dist_to_ceil)
 
             if frac_part > 1e-8:
                 all_integer = False
 
-                # Bestimme ob diese Variable die neue "most fractional" ist
                 is_new_most_frac = False
 
                 if frac_part > max_fractionality + 1e-10:
-                    # Höhere Fraktionalität gefunden
+                    # Higher fractionality found
                     is_new_most_frac = True
                 elif abs(frac_part - max_fractionality) < 1e-10:
-                    # Gleiche Fraktionalität - Tie-Break anwenden
+                    # Same fractionality - apply tie-breaking
                     if most_frac_info is not None:
                         if n < most_frac_info['n']:
-                            # Kleinerer n-Wert
                             is_new_most_frac = True
                         elif n == most_frac_info['n'] and a < most_frac_info['a']:
-                            # Gleicher n-Wert, aber kleinerer a-Wert
                             is_new_most_frac = True
                     else:
-                        # Erste fraktionale Variable
                         is_new_most_frac = True
 
                 if is_new_most_frac:

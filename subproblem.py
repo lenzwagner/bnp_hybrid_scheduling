@@ -352,7 +352,7 @@ class Subproblem:
             self._add_bilinear_product_constraints(p, d)
 
             # Requirement fulfillment
-            self._add_requirement_constraint_with_heff(p, d)
+            self._add_requirement_constraint(p, d, use_heff=True)
 
     def _add_linearization_constraints(self):
         """Add exact linearization constraints for exponential/sigmoid learning."""
@@ -469,26 +469,24 @@ class Subproblem:
             name=f"h_eff_lower_{p}_{d}"
         )
 
-    def _add_requirement_constraint(self, p, d):
-        """Add requirement fulfillment constraint using App directly."""
+    def _add_requirement_constraint(self, p, d, use_heff=False):
+        """
+        Add requirement fulfillment constraint.
+
+        Args:
+            p: Profile/patient index
+            d: Day
+            use_heff: If True, use h_eff (product of y and App), else use App directly
+        """
         sessions = gu.quicksum(
             gu.quicksum(self.x[p, t, j, self.col_id] for j in range(self.Entry[p], d + 1))
             for t in self.T
         )
-        learning_benefit = gu.quicksum(self.App[p, j] for j in range(self.Entry[p], d + 1))
 
-        self.Model.addConstr(
-            self.l[p, d] * self.Req[p] <= sessions + learning_benefit,
-            name=f"requirement_{p}_{d}"
-        )
-
-    def _add_requirement_constraint_with_heff(self, p, d):
-        """Add requirement fulfillment constraint using h_eff."""
-        sessions = gu.quicksum(
-            gu.quicksum(self.x[p, t, j, self.col_id] for j in range(self.Entry[p], d + 1))
-            for t in self.T
-        )
-        learning_benefit = gu.quicksum(self.h_eff[p, j] for j in range(self.Entry[p], d + 1))
+        if use_heff:
+            learning_benefit = gu.quicksum(self.h_eff[p, j] for j in range(self.Entry[p], d + 1))
+        else:
+            learning_benefit = gu.quicksum(self.App[p, j] for j in range(self.Entry[p], d + 1))
 
         self.Model.addConstr(
             self.l[p, d] * self.Req[p] <= sessions + learning_benefit,

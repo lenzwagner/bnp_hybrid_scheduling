@@ -1,5 +1,6 @@
 from CG import ColumnGeneration
 from branch_and_price import BranchAndPrice
+from Utils.compact import Problem_d
 
 
 def main():
@@ -178,3 +179,6 @@ def main():
 
 if __name__ == "__main__":
     results = main()
+    problem = Problem_d()
+    problem.buildModel()
+    problem.Model.optimize()
