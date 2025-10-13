@@ -11,7 +11,7 @@ def main():
     # ===========================
 
     # Random seed for reproducibility
-    seed = 12
+    seed = 92
 
     # Learning parameters
     app_data = {
@@ -28,14 +28,14 @@ def main():
     }
 
     # Instance parameters
-    T = 5  # Number of therapists
-    D_focus = 10  # Number of focus days
+    T = 3  # Number of therapists
+    D_focus = 5  # Number of focus days
 
     # Algorithm parameters
-    dual_improvement_iter = 5  # Max Iterations without dual improvement
-    dual_stagnation_threshold = 1e-4
+    dual_improvement_iter = 20  # Max Iterations without dual improvement
+    dual_stagnation_threshold = 1e-5
     max_itr = 100  # Maximum CG iterations
-    threshold = 1e-3  # Convergence threshold
+    threshold = 1e-5  # Convergence threshold
 
     # Additional settings
     pttr = 'medium'  # Patient-to-therapist ratio: 'low', 'medium', 'high'
@@ -116,9 +116,9 @@ def main():
                                     branching_strategy=branching_strategy,
                                     search_strategy=search_strategy,
                                     verbose=True,
-                                    ip_heuristic_frequency=0,
-                                    early_incumbent_iteration=1)
-        results = bnp_solver.solve(time_limit=3600, max_nodes=100)
+                                    ip_heuristic_frequency=10,
+                                    early_incumbent_iteration=0)
+        results = bnp_solver.solve(time_limit=3600, max_nodes=1000)
 
         # Print CG statistics (from root node)
         print("\n" + "=" * 100)
