@@ -49,6 +49,7 @@ def main():
     branching_strategy = 'sp'  # 'mp' for MP variable branching, 'sp' for SP variable branching
     search_strategy = 'dfs' # 'dfs' for Depth-First, 'bfs' for Best-Fit-Search
 
+
     # Visualization settings
     visualize_tree = False  # Enable tree visualization
     tree_layout = 'hierarchical'  # 'hierarchical' or 'radial'
