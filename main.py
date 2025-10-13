@@ -179,6 +179,3 @@ def main():
 
 if __name__ == "__main__":
     results = main()
-    problem = Problem_d()
-    problem.buildModel()
-    problem.Model.optimize()
