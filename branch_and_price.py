@@ -1642,8 +1642,6 @@ class BranchAndPrice:
                     if 'sp_branch' in c.ConstrName:
                         self._print(f"  Constraint: {c.ConstrName}")
 
-                import sys
-                sys.exit(0)
 
         self._print(f"    [Master] Master problem ready:")
         self._print(f"             - {len(master.lmbda)} lambda variables")

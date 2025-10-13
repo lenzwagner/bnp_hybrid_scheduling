@@ -118,7 +118,7 @@ def main():
                                     search_strategy=search_strategy,
                                     verbose=True,
                                     ip_heuristic_frequency=10,
-                                    early_incumbent_iteration=0)
+                                    early_incumbent_iteration=1)
         results = bnp_solver.solve(time_limit=3600, max_nodes=1000)
 
         # Print CG statistics (from root node)
