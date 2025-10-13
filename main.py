@@ -12,7 +12,7 @@ def main():
     # ===========================
 
     # Random seed for reproducibility
-    seed = 14
+    seed = 64 # 14 or 12 to test, or 92 as the big boss
 
     # Learning parameters
     app_data = {
@@ -34,9 +34,9 @@ def main():
 
     # Algorithm parameters
     dual_improvement_iter = 20  # Max Iterations without dual improvement
-    dual_stagnation_threshold = 1e-5
+    dual_stagnation_threshold = 1e-4
     max_itr = 100  # Maximum CG iterations
-    threshold = 1e-5  # Convergence threshold
+    threshold = 1e-4  # Convergence threshold
 
     # Additional settings
     pttr = 'medium'  # Patient-to-therapist ratio: 'low', 'medium', 'high'
@@ -48,6 +48,9 @@ def main():
     # Branch-and-Price settings
     use_branch_and_price = True  # Set to False for standard CG
     branching_strategy = 'mp'  # 'mp' for MP variable branching, 'sp' for SP variable branching
+
+    # New setting to control compact model solution and comparison
+    solve_and_compare_compact_model = False
 
     # Visualization settings
     visualize_tree = False  # Enable tree visualization
@@ -75,6 +78,7 @@ def main():
     print(f"  - Threshold: {threshold}")
     print(f"  - PTTR scenario: {pttr}")
     print(f"  - Pricing filtering: {pricing_filtering}")
+    print(f"  - Solve and compare compact model: {solve_and_compare_compact_model}")
     print()
 
     # ===========================
@@ -112,8 +116,8 @@ def main():
         print("=" * 100 + "\n")
 
         bnp_solver = BranchAndPrice(cg_solver, branching_strategy=branching_strategy, verbose=True,
-                 ip_heuristic_frequency=0, early_incumbent_iteration=2)
-        results = bnp_solver.solve(time_limit=3600, max_nodes=100)
+                 ip_heuristic_frequency=10, early_incumbent_iteration=0)
+        results = bnp_solver.solve(time_limit=3600, max_nodes=1000)
 
         # Print CG statistics (from root node)
         print("\n" + "=" * 100)
@@ -136,6 +140,19 @@ def main():
     else:
         # Standard Column Generation
         results = cg_solver.solve()
+
+    # ===========================
+    # SOLVE COMPACT MODEL FOR COMPARISON (if enabled)
+    # ===========================
+    if solve_and_compare_compact_model:
+        print("\n" + "=" * 100)
+        print(" SOLVING COMPACT MODEL FOR COMPARISON ".center(100, "="))
+        print("=" * 100)
+        cg_solver.problem.solveModel()
+        compact_obj_val = cg_solver.problem.Model.objVal
+        results['compact_obj'] = compact_obj_val
+        print(f"Compact Model Objective: {compact_obj_val:.5f}")
+        print("=" * 100)
 
     # ===========================
     # SUMMARY
@@ -168,9 +185,22 @@ def main():
         print(f"  - Iterations: {results['num_iterations']}")
         print(f"  - LP objective: {results['lp_obj']:.5f}")
         print(f"  - IP objective: {results['ip_obj']:.5f}")
-        print(f"  - Compact model: {results['comp_obj']:.5f}")
         print(f"  - Gap: {results['gap']:.5%}")
         print(f"  - Integral: {results['is_integral']}")
+
+    if solve_and_compare_compact_model:
+        print("\nModel Comparison:")
+        final_obj = results.get('incumbent') if use_branch_and_price else results.get('ip_obj')
+        if final_obj is not None:
+             print(f"  - B&P/CG Objective: {final_obj:.5f}")
+             print(f"  - Compact Model Objective: {results['compact_obj']:.5f}")
+             if abs(final_obj - results['compact_obj']) < 1e-4:
+                 print("  - Verdict: ✅ Identical objective values.")
+             else:
+                 print("  - Verdict: ❌ Different objective values.")
+        else:
+            print("  - Could not perform comparison: No final B&P/CG objective value available.")
+
 
     print("=" * 100 + "\n")
 
