@@ -12,7 +12,7 @@ def main():
     # ===========================
 
     # Random seed for reproducibility
-    seed = 64 # 14 or 12 to test, or 92 as the big boss
+    seed = 64 # 14 or 12 to test, or 64 as the big boss
 
     # Learning parameters
     app_data = {
