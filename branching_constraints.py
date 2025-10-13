@@ -88,12 +88,16 @@ class SPVariableBranching(BranchingConstraint):
         dual_right: Dual variable for right constraint (delta^R_{nl})
     """
 
-    def __init__(self, profile_n, agent_j, period_t, value, level):
+    def __init__(self, profile_n, agent_j, period_t, value, dir, level,
+                 floor_val, ceil_val):
         self.profile = profile_n
         self.agent = agent_j
         self.period = period_t
-        self.value = value  # 0 for left, 1 for right
-        self.level = level  # Tree level for delta dual tracking
+        self.value = value
+        self.level = level
+        self.dir = dir
+        self.floor = floor_val
+        self.ceil = ceil_val
         self.dual_left = 0.0
         self.dual_right = 0.0
         self.master_constraint = None  # Store reference to created constraint
@@ -110,7 +114,7 @@ class SPVariableBranching(BranchingConstraint):
 
         print(f'\n    {"=" * 80}')
         print(f'    [SP Branch] Applying constraint for Node {node.node_id}')
-        print(f'    [SP Branch] Profile {n}, Agent {j}, Period {t}, Value {self.value}')
+        print(f'    [SP Branch] Profile {n}, Agent {j}, Period {t}')
 
         # ✅ Find all columns in NODE's column pool where chi^a_{njt} = 1
         relevant_columns = []
@@ -137,6 +141,8 @@ class SPVariableBranching(BranchingConstraint):
         print(f'    [SP Branch] Relevant columns: {relevant_columns}')
         print(f'    {"=" * 80}\n')
 
+        print('Gallo', assignment_key, schedules_x, sep="\n")
+
         if not relevant_columns:
             print(f'    ⚠️  [SP Branch] No relevant columns found - constraint trivially satisfied')
             return
@@ -153,18 +159,16 @@ class SPVariableBranching(BranchingConstraint):
         lhs = gu.quicksum(master.lmbda[n, a] for (n_key, a) in existing_lambdas)
         print('LHS',lhs)
 
-        if self.value == 0:  # Left branch: no assignment
+        if self.dir == 'left':  # Left branch
             self.master_constraint = master.Model.addConstr(
-                lhs == 0,
+                lhs <= self.floor,
                 name=f"sp_branch_L{self.level}_{n}_{j}_{t}"
             )
-            print(f'    ✅ [SP Branch] Added LEFT constraint: {self.master_constraint.ConstrName}')
-        else:  # Right branch: force assignment
+        else:  # Right branch
             self.master_constraint = master.Model.addConstr(
-                lhs >= 1,
+                lhs >= self.ceil,
                 name=f"sp_branch_R{self.level}_{n}_{j}_{t}"
             )
-            print(f'    ✅ [SP Branch] Added RIGHT constraint: {self.master_constraint.ConstrName}')
 
         master.Model.update()
 
@@ -190,8 +194,12 @@ class SPVariableBranching(BranchingConstraint):
 
         if var_key in subproblem.x:
             # Fix variable to branching value
-            subproblem.x[var_key].LB = self.value
-            subproblem.x[var_key].UB = self.value
+            if self.dir == 'left':
+                subproblem.x[var_key].LB = 0
+                subproblem.x[var_key].UB = 0
+            else:
+                subproblem.x[var_key].LB = 1
+                subproblem.x[var_key].UB = 1
             subproblem.Model.update()
 
     def is_column_compatible(self, column_data):
@@ -253,7 +261,7 @@ class SPVariableBranching(BranchingConstraint):
 
     def __repr__(self):
         return (f"SPBranch(profile={self.profile}, agent={self.agent}, "
-                f"period={self.period}, x={self.value}, level={self.level})")
+                f"period={self.period}, dir={self.dir}, level={self.level})")
 
 
 class MPVariableBranching(BranchingConstraint):

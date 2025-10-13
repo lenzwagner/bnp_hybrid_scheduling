@@ -1900,6 +1900,8 @@ class BranchAndPrice:
         j = branching_info['agent']
         t = branching_info['period']
         beta_val = branching_info['beta_value']
+        floor_val = branching_info['floor']
+        ceil_val = branching_info['ceil']
 
         self._print(f"\n{'=' * 100}")
         self._print(f" BRANCHING ON SP VARIABLE ".center(100, "="))
@@ -1925,8 +1927,11 @@ class BranchAndPrice:
             profile_n=n,
             agent_j=j,
             period_t=t,
-            value=0,
-            level=left_child.depth
+            value=1,
+            dir='left',
+            level=left_child.depth,
+            floor_val=floor_val,
+            ceil_val=ceil_val
         )
 
         left_child.branching_constraints = parent_node.branching_constraints.copy()
@@ -1951,7 +1956,10 @@ class BranchAndPrice:
             agent_j=j,
             period_t=t,
             value=1,
-            level=right_child.depth
+            dir='right',
+            level=right_child.depth,
+            floor_val=floor_val,
+            ceil_val=ceil_val
         )
 
         right_child.branching_constraints = parent_node.branching_constraints.copy()
