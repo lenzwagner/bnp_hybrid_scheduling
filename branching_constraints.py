@@ -1,3 +1,4 @@
+import sys
 from abc import ABC, abstractmethod
 import gurobipy as gu
 
@@ -13,12 +14,14 @@ class BranchingConstraint(ABC):
     """
 
     @abstractmethod
-    def apply_to_master(self, master):
+    @abstractmethod
+    def apply_to_master(self, master, node):
         """
         Apply this constraint to the master problem.
 
         Args:
             master: MasterProblem_d instance
+            node: BnPNode instance (for accessing column_pool)
         """
         pass
 
@@ -95,49 +98,81 @@ class SPVariableBranching(BranchingConstraint):
         self.dual_right = 0.0
         self.master_constraint = None  # Store reference to created constraint
 
-    def apply_to_master(self, master):
+    def apply_to_master(self, master, node):
         """
-        Add constraint to master problem.
+        Add constraint to master problem using node's column pool.
 
         Paper Equation (branch:sub2):
-        Left:  sum_{a: chi^a_{njt}=1} Lambda_{na} <= floor(beta)
-        Right: sum_{a: chi^a_{njt}=1} Lambda_{na} >= ceil(beta)
-
-        For simplicity in Phase 2, we implement:
         Left:  sum_{a: chi^a_{njt}=1} Lambda_{na} = 0  (no assignment allowed)
         Right: sum_{a: chi^a_{njt}=1} Lambda_{na} >= 1  (at least one assignment)
         """
         n, j, t = self.profile, self.agent, self.period
 
-        # Find all columns for profile n where chi^a_{njt} = 1
+        print(f'\n    {"=" * 80}')
+        print(f'    [SP Branch] Applying constraint for Node {node.node_id}')
+        print(f'    [SP Branch] Profile {n}, Agent {j}, Period {t}, Value {self.value}')
+
+        # ✅ Find all columns in NODE's column pool where chi^a_{njt} = 1
         relevant_columns = []
-        for a in master.A:
-            # Check if this column assigns profile n to agent j in period t
-            # master.all_schedules stores: {(p, j, t, a): value}
-            if master.all_schedules.get((n, j, t, a), 0) == 1:
-                relevant_columns.append(a)
-        print('Rel Col', relevant_columns)
+
+        # Filter all columns for profile n
+        for (p, a), col_data in node.column_pool.items():
+            if p != n:
+                continue  # Only check columns for this profile
+
+            schedules_x = col_data.get('schedules_x', {})
+
+            # Check if this column has assignment (n, j, t)
+            # Key format in schedules_x: (n, j, t, 0) - always with 0 at the end!
+            assignment_key = (n, j, t, 0)
+
+            if assignment_key in schedules_x:
+                value = schedules_x[assignment_key]
+                print(f'    [SP Branch] Column {a}: schedules_x[{assignment_key}] = {value}')
+
+                if value > 0.5:  # Assignment exists
+                    relevant_columns.append(a)
+                    print(f'    [SP Branch]   ✅ Column {a} added to relevant_columns')
+
+        print(f'    [SP Branch] Relevant columns: {relevant_columns}')
+        print(f'    {"=" * 80}\n')
 
         if not relevant_columns:
-            # No relevant columns yet, constraint is trivially satisfied
+            print(f'    ⚠️  [SP Branch] No relevant columns found - constraint trivially satisfied')
+            return
+
+        # Verify Lambda variables exist
+        existing_lambdas = [(n, a) for a in relevant_columns if (n, a) in master.lmbda]
+        print(f'    [SP Branch] Lambda variables exist: {existing_lambdas}')
+
+        if not existing_lambdas:
+            print(f'    ❌ [SP Branch] ERROR: No Lambda variables found!')
             return
 
         # Create constraint expression
-        lhs = gu.quicksum(master.lmbda[n, a] for a in relevant_columns if (n, a) in master.lmbda)
-        print('LHS', lhs)
+        lhs = gu.quicksum(master.lmbda[n, a] for (n_key, a) in existing_lambdas)
+        print('LHS',lhs)
 
         if self.value == 0:  # Left branch: no assignment
             self.master_constraint = master.Model.addConstr(
                 lhs == 0,
                 name=f"sp_branch_L{self.level}_{n}_{j}_{t}"
             )
-        else:  # Right branch: force assignment (value == 1)
+            print(f'    ✅ [SP Branch] Added LEFT constraint: {self.master_constraint.ConstrName}')
+        else:  # Right branch: force assignment
             self.master_constraint = master.Model.addConstr(
                 lhs >= 1,
                 name=f"sp_branch_R{self.level}_{n}_{j}_{t}"
             )
+            print(f'    ✅ [SP Branch] Added RIGHT constraint: {self.master_constraint.ConstrName}')
 
         master.Model.update()
+
+        # Verify constraint was added
+        for c in master.Model.getConstrs():
+            if c.ConstrName == self.master_constraint.ConstrName:
+                print(f'    ✅ [SP Branch] Constraint verified in model!')
+                break
 
     def apply_to_subproblem(self, subproblem):
         """
@@ -251,22 +286,14 @@ class MPVariableBranching(BranchingConstraint):
         self.direction = direction  # 'left' or 'right'
         self.original_schedule = original_schedule  # For no-good cut
 
-    def apply_to_master(self, master):
+    def apply_to_master(self, master, node):  # ← node Parameter hinzugefügt (auch wenn hier nicht gebraucht)
         """
         Set variable bounds on Lambda_{na}.
-
-        Left:  Lambda_{na} <= floor(Lambda_hat)
-        Right: Lambda_{na} >= ceil(Lambda_hat)
-
-        The variable MUST exist in the master!
         """
         var = master.lmbda.get((self.profile, self.column))
 
         if var is None:
-            # This should NEVER happen with correct column inheritance
             print(f"    ❌ ERROR: Variable Lambda[{self.profile},{self.column}] not found in master!")
-            print(f"       This indicates the column was incorrectly filtered during inheritance.")
-            print(f"       MP branching requires the column to exist so we can set bounds!")
             return
 
         # Set bounds

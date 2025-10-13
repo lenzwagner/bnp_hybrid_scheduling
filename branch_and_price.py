@@ -1620,7 +1620,8 @@ class BranchAndPrice:
             for constraint in node.branching_constraints:
                 self._print('Cons', constraint)
 
-                constraint.apply_to_master(master)
+                constraint.apply_to_master(master, node)  # ← node übergeben!
+
                 # Check if this is SP branching (adds constraints)
                 if hasattr(constraint, 'master_constraint') and constraint.master_constraint is not None:
                     sp_branching_active = True
@@ -1628,6 +1629,21 @@ class BranchAndPrice:
             master.Model.update()
             self._print(f"    [Master] Now have {len(master.Model.getConstrs())} constraints")
             self._print(f"    [Master] SP-Branching constraints added: {sp_branching_active}")
+
+            # 🛑 DEBUG EXIT
+            if sp_branching_active and node.node_id > 0:  # Don't exit at root
+                self._print(f"\n{'=' * 100}")
+                self._print(f"🛑 DEBUG EXIT: SP-Branching constraint added for Node {node.node_id}")
+                self._print(f"{'=' * 100}")
+                master.Model.write(f"LPs/MP/LPs/debug_sp_branch_node_{node.node_id}.lp")
+
+                # Show constraint details
+                for c in master.Model.getConstrs():
+                    if 'sp_branch' in c.ConstrName:
+                        self._print(f"  Constraint: {c.ConstrName}")
+
+                import sys
+                sys.exit(0)
 
         self._print(f"    [Master] Master problem ready:")
         self._print(f"             - {len(master.lmbda)} lambda variables")
