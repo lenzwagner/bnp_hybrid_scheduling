@@ -729,6 +729,7 @@ class BranchAndPrice:
 
         # Branch on root
         branching_type, branching_info = self.select_branching_candidate(root_node)
+        print(branching_info, branching_type)
 
         if not branching_type:
             self._print(f"⚠️  Could not find branching candidate despite fractional solution!")
@@ -885,6 +886,7 @@ class BranchAndPrice:
             self._print(f"   ├─ Left:  Node {left_child.node_id} (path: '{left_child.path}')")
             self._print(f"   └─ Right: Node {right_child.node_id} (path: '{right_child.path}')")
             self._print(f"\n   Open nodes queue: {self.open_nodes}")
+            sys.exit()
 
         # ========================================
         # FINALIZATION
@@ -1082,29 +1084,48 @@ class BranchAndPrice:
         """
         Select most fractional beta_{njt} for SP branching.
 
+        Uses node.column_pool to get correct column_ids instead of master.all_schedules.
+
         beta_{njt} = sum_{a: chi^a_{njt}=1} Lambda_{na}
 
         Returns:
             tuple: ('sp', branching_info) or (None, None)
         """
-        # Compute beta values for all (n,j,t) combinations
+        master = self.cg_solver.master
         beta_values = {}
 
-        # Access master solution to compute beta
-        master = self.cg_solver.master
+        self._print(f"\n[SP Branching] Computing beta values from node.column_pool...")
+        self._print(f"  Column pool size: {len(node.column_pool)}")
 
+        # Iterate over Lambda variables to get their current LP values
         for (n, a), var in master.lmbda.items():
             lambda_val = var.X
 
             if lambda_val < 1e-6:
                 continue
 
-            # Get chi values for this column from all_schedules
-            # Format: all_schedules[(p, j, t, a)] = chi_value
-            for (p, j, t, a_col), chi_val in master.all_schedules.items():
-                if p == n and a_col == a and chi_val > 0.5:
+            # Get column data from node's column pool using correct (profile, column_id)
+            if (n, a) not in node.column_pool:
+                self._print(f"  ⚠️  Lambda[{n},{a}] = {lambda_val:.4f} but column not in pool!")
+                continue
+
+            col_data = node.column_pool[(n, a)]
+            schedules_x = col_data.get('schedules_x', {})
+            if n == 55 and lambda_val > 1e-4:
+                print(a, schedules_x)
+
+            if not schedules_x:
+                continue
+
+            # Extract assignments from this column
+            # schedules_x format: {(p, j, t, old_col_id): value}
+            # We only care about (p, j, t) and whether chi = 1
+            for (p, j, t, _), chi_val in schedules_x.items():
+                if p == n and chi_val > 0.5:  # Assignment exists
                     key = (n, j, t)
                     beta_values[key] = beta_values.get(key, 0.0) + lambda_val
+
+        self._print(f"  Found {len(beta_values)} non-zero beta values")
 
         # Find most fractional beta
         best_candidate = None
@@ -1147,8 +1168,25 @@ class BranchAndPrice:
                         'assignment': (n, j, t)
                     }
 
+        print('Beta', beta_values)
+
         if best_candidate is None:
+            self._print(f"  ❌ No fractional beta found!")
+
+            # Debug: Show some beta values
+            if beta_values:
+                sample_betas = list(beta_values.items())[:5]
+                self._print(f"  Sample beta values:")
+                for (n, j, t), beta in sample_betas:
+                    self._print(f"    beta[{n},{j},{t}] = {beta:.6f}")
+
             return None, None
+
+        self._print(f"\n  ✅ Most fractional beta:")
+        self._print(
+            f"     beta[{best_candidate['profile']},{best_candidate['agent']},{best_candidate['period']}] = {best_candidate['beta_value']:.6f}")
+        self._print(f"     Fractionality: {best_candidate['fractionality']:.6f}")
+        self._print(f"     Floor: {best_candidate['floor']}, Ceil: {best_candidate['ceil']}")
 
         return 'sp', best_candidate
 
@@ -1505,6 +1543,23 @@ class BranchAndPrice:
         master.Model.update()
 
         self._print(f"    [Master] Basic model built with {len(master.Model.getConstrs())} constraints")
+
+        # ✅ CRITICAL FIX: Add initial columns (col_id=1) to all_schedules for SP branching
+        self._print(f"    [Master] Adding initial columns (col_id=1) to all_schedules...")
+        initial_cols_added = 0
+        for (profile, col_id), col_data in node.column_pool.items():
+            if col_id == 1:
+                schedules_x = col_data.get('schedules_x', {})
+                if schedules_x:
+                    master.addSchedule(schedules_x)
+                    initial_cols_added += 1
+
+                    # Debug: Show first assignment
+                    if initial_cols_added == 1:
+                        sample_key = list(schedules_x.keys())[0]
+                        self._print(f"      Sample initial column: {sample_key} = {schedules_x[sample_key]}")
+
+        self._print(f"    [Master] Added {initial_cols_added} initial columns to all_schedules")
 
         sp_branching_active = False
 
