@@ -1806,7 +1806,7 @@ class BranchAndPrice:
         )
 
         self._print(
-            f"        [Column] Added column ({profile}, {col_id}) with reduced cost {subproblem.Model.objVal:.6f}")
+            f"        [Column] Added column ({profile}, {col_id}) with reduced costd {subproblem.Model.objVal:.6f}")
 
     def branch_on_sp_variable(self, parent_node, branching_info):
         """
