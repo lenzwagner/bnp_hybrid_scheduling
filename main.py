@@ -113,7 +113,7 @@ def main():
 
         bnp_solver = BranchAndPrice(cg_solver, branching_strategy=branching_strategy, verbose=True,
                  ip_heuristic_frequency=0, early_incumbent_iteration=2)
-        results = bnp_solver.solve(time_limit=3600, max_nodes=100, solve_compact=True)
+        results = bnp_solver.solve(time_limit=3600, max_nodes=100)
 
         # Print CG statistics (from root node)
         print("\n" + "=" * 100)
@@ -146,7 +146,7 @@ def main():
     print("=" * 100)
     print(f"Completed successfully!")
     print(f"  - Mode: {'Branch-and-Price' if use_branch_and_price else 'Column Generation'}")
-    #print(f"  - Total time: {results['total_time']:.2f}s")
+    print(f"  - Total time: {results['total_time']:.2f}s")
 
     if use_branch_and_price:
         print(f"\nBranch-and-Price Results:")
