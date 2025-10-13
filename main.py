@@ -33,10 +33,10 @@ def main():
     D_focus = 5  # Number of focus days
 
     # Algorithm parameters
-    dual_improvement_iter = 5  # Max Iterations without dual improvement
-    dual_stagnation_threshold = 1e-4
+    dual_improvement_iter = 20  # Max Iterations without dual improvement
+    dual_stagnation_threshold = 1e-5
     max_itr = 100  # Maximum CG iterations
-    threshold = 1e-3  # Convergence threshold
+    threshold = 1e-5  # Convergence threshold
 
     # Additional settings
     pttr = 'medium'  # Patient-to-therapist ratio: 'low', 'medium', 'high'
