@@ -745,6 +745,7 @@ class BranchAndPrice:
         else:  # 'sp'
             left_child, right_child = self.branch_on_sp_variable(root_node, branching_info)
 
+        sys.exit()
         # Mark root as branched
         root_node.status = 'branched'
         self.stats['nodes_branched'] += 1
@@ -805,7 +806,6 @@ class BranchAndPrice:
                 self._print(f"   [BFS] Selected Node {current_node_id} with initial bound {bound:.4f}")
 
             else:  # DFS (default)
-                # DFS: pop the last added node (LIFO)
                 current_node_id = self.open_nodes.pop()
 
             # Log the processing order for all strategies
@@ -1100,12 +1100,15 @@ class BranchAndPrice:
 
         self._print(f"\n[SP Branching] Computing beta values from node.column_pool...")
         self._print(f"  Column pool size: {len(node.column_pool)}")
+        self._print(f"  Lambda values size: {len(master.lmbda.items())}")
+
+        if len(node.column_pool) != len(master.lmbda.items()):
+            self._print(f"  ⚠️  Lambda pool is not equal sized as the column pool")
+
 
         # Iterate over Lambda variables to get their current LP values
         for (n, a), var in master.lmbda.items():
             lambda_val = var.X
-            if a == 1 and n == 55:
-                print(f'Lambda {lambda_val:.6f} for (n,a) {n,a}')
 
             if lambda_val < 1e-6:
                 continue
@@ -1117,22 +1120,17 @@ class BranchAndPrice:
 
             col_data = node.column_pool[(n, a)]
             schedules_x = col_data.get('schedules_x', {})
-            if n == 55 and lambda_val > 1e-4:
-                print(a, schedules_x)
 
             if not schedules_x:
                 continue
 
             # Extract assignments from this column
-            # schedules_x format: {(p, j, t, old_col_id): value}
-            # We only care about (p, j, t) and whether chi = 1
             for (p, j, t, _), chi_val in schedules_x.items():
-                if p == n and chi_val > 0.5:  # Assignment exists
+                if p == n and chi_val > 0.5:
                     key = (n, j, t)
                     beta_values[key] = beta_values.get(key, 0.0) + lambda_val
 
         self._print(f"  Found {len(beta_values)} non-zero beta values")
-        sys.exit()
 
         # Find most fractional beta
         best_candidate = None
@@ -1147,7 +1145,6 @@ class BranchAndPrice:
             fractionality = min(dist_to_floor, dist_to_ceil)
 
             if fractionality > 1e-5:  # Fractional
-                # Check if this is better (higher fractionality, or tie-break by n,j,t)
                 is_better = False
 
                 if fractionality > max_fractionality + 1e-10:
@@ -1175,23 +1172,15 @@ class BranchAndPrice:
                         'assignment': (n, j, t)
                     }
 
-        print('Beta', beta_values)
+        print('Best Beta', best_candidate)
 
         if best_candidate is None:
             self._print(f"  ❌ No fractional beta found!")
 
-            # Debug: Show some beta values
-            if beta_values:
-                sample_betas = list(beta_values.items())[:5]
-                self._print(f"  Sample beta values:")
-                for (n, j, t), beta in sample_betas:
-                    self._print(f"    beta[{n},{j},{t}] = {beta:.6f}")
-
             return None, None
 
         self._print(f"\n  ✅ Most fractional beta:")
-        self._print(
-            f"     beta[{best_candidate['profile']},{best_candidate['agent']},{best_candidate['period']}] = {best_candidate['beta_value']:.6f}")
+        self._print(f"     beta[{best_candidate['profile']},{best_candidate['agent']},{best_candidate['period']}] = {best_candidate['beta_value']:.6f}")
         self._print(f"     Fractionality: {best_candidate['fractionality']:.6f}")
         self._print(f"     Floor: {best_candidate['floor']}, Ceil: {best_candidate['ceil']}")
 
