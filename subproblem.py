@@ -4,7 +4,7 @@ from Utils.Generell.utils import *
 
 
 class Subproblem:
-    def __init__(self, df, duals_p, duals_td, p, col_id, Req, Entry, app_data, W_coeff, E_dict, S_Bound,
+    def __init__(self, df, duals_gamma, duals_pi, duals_delta, p, col_id, Req, Entry, app_data, W_coeff, E_dict, S_Bound,
                  learn_method,
                  reduction=False, num_tangents=10, node_path=''):
         self.reduction = reduction
@@ -26,13 +26,16 @@ class Subproblem:
         self._init_patient_sets(df)
 
         self.T = df['T'].dropna().astype(int).unique().tolist()
-        self.duals_p = duals_p
-        self.duals_td = duals_td
+        self.duals_gamma = duals_gamma
+        self.duals_pi = duals_pi
+        self.duals_delta = duals_delta
         self.Model = gu.Model("Subproblem")
         self.M = max(self.D) + 1
         self.S_Bound = S_Bound[self.P]
         self.R = list(range(1, 1 + self.S_Bound))
-        print(f'Duals for {self.P} in itr. {self.itr}: {self.duals_p,self.duals_td}')
+        if self.duals_delta != 0:
+            print(f'Duals delta is: {self.duals_delta} for profile {self.P}')
+            sys.exit()
 
     def _init_day_horizon(self):
         """Initialize the day horizon with optional reduction."""
@@ -499,9 +502,9 @@ class Subproblem:
         """Generate objective function."""
         self.Model.setObjective(
             self.E[self.P] * self.LOS[self.P, self.col_id] -
-            gu.quicksum(self.x[self.P, t, d, self.col_id] * self.duals_td[t, d]
+            gu.quicksum(self.x[self.P, t, d, self.col_id] * self.duals_pi[t, d]
                         for t in self.T for d in self.D) -
-            self.duals_p[self.P],
+            self.duals_gamma[self.P] - self.duals_gamma,
             sense=gu.GRB.MINIMIZE
         )
 

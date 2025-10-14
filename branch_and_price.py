@@ -341,8 +341,8 @@ class BranchAndPrice:
         self.update_gap()
 
         # Save initial Root-LP/SOL
-        self.cg_solver.master.Model.write('LPs/MP/LPs/Root.lp')
-        self.cg_solver.master.Model.write('LPs/MP/SOLs/Root.sol')
+        self.cg_solver.master.Model.write('LPs/MP/LPs/master_node_root.lp')
+        self.cg_solver.master.Model.write('LPs/MP/SOLs/master_node_root.sol')
 
         self._print(f"\n{'=' * 100}")
         self._print(" ROOT NODE SOLVED ".center(100, "="))
@@ -1408,8 +1408,6 @@ class BranchAndPrice:
         # 1. Build master problem and save LP for this node
         master = self._build_master_for_node(node)
         master.Model.update()
-        master.Model.write(f"LPs/MP/LPs/mp_root_{node.node_id}.lp")
-        self._print(f"    [Master] Saved LP to: LPs/MP/LPs/mp_root_{node.node_id}.lp")
 
         # Determine branching profile (from constraints)
         saved_profiles = set()
@@ -1444,14 +1442,16 @@ class BranchAndPrice:
             self._print(f"    [CG Iter {cg_iteration}] LP objective: {current_lp_obj:.6f}")
 
             # Get duals from master
-            duals_td, duals_p = master.getDuals()
-
+            duals_pi, duals_gamma = master.getDuals()
+            for constr in master.Model.getConstrs():
+                print(f"{constr.ConstrName}: Dual = {constr.Pi}")
             self._print(self.branching_strategy)
 
             # Get branching constraint duals if SP-branching is used
             branching_duals = {}
             if self.branching_strategy == 'sp':
                 branching_duals = self._get_branching_constraint_duals(master, node)
+                print(branching_duals)
 
             # 3. Solve subproblems for all profiles
             new_columns_found = False
@@ -1460,7 +1460,7 @@ class BranchAndPrice:
             for profile in self.cg_solver.P_Join:
                 # Build and solve subproblem with branching constraints
                 sp = self._build_subproblem_for_node(
-                    profile, node, duals_td, duals_p, branching_duals
+                    profile, node, duals_pi, duals_gamma, branching_duals
                 )
                 # ✅ SAVE FIRST SP FOR BRANCHING PROFILE
                 if (profile == branching_profile and
@@ -1470,7 +1470,6 @@ class BranchAndPrice:
                     sp.Model.write(sp_filename)
                     saved_profiles.add(profile)
                     self._print(f"    ✅ [SP Saved] First pricing SP for branching profile {profile}: {sp_filename}")
-                    sys.exit()
                 sp.solModel()
 
                 # Check reduced cost
@@ -1490,7 +1489,7 @@ class BranchAndPrice:
                 self._print(f"    [CG] Converged after {cg_iteration} iterations - no improving columns found")
                 break
             master.Model.update()
-
+        sys.exit()
         # 4. Final LP solve and integrality check
         self._print(f"\n    [Node {node.node_id}] Final LP solve...")
         master.Model.write(f"LPs/MP/LPs/mp_final_{node.node_id}.lp")
@@ -1638,7 +1637,7 @@ class BranchAndPrice:
                 self._print(f"\n{'=' * 100}")
                 self._print(f"🛑 DEBUG EXIT: SP-Branching constraint added for Node {node.node_id}")
                 self._print(f"{'=' * 100}")
-                master.Model.write(f"LPs/MP/LPs/debug_sp_branch_node_{node.node_id}.lp")
+                master.Model.write(f"LPs/MP/LPs/master_branch_node_{node.node_id}.lp")
 
                 # Show constraint details
                 for c in master.Model.getConstrs():
@@ -1746,7 +1745,7 @@ class BranchAndPrice:
 
         return branching_duals
 
-    def _build_subproblem_for_node(self, profile, node, duals_td, duals_p, branching_duals=None):
+    def _build_subproblem_for_node(self, profile, node, duals_pi, duals_gamma, branching_duals=None):
         """
         Build subproblem for a profile at a node with branching constraints.
 
@@ -1755,8 +1754,8 @@ class BranchAndPrice:
         Args:
             profile: Profile index
             node: BnPNode
-            duals_td: Dual variables for capacity constraints
-            duals_p: Dual variables for profile constraints
+            duals_pi: Dual variables for capacity constraints
+            duals_gamma: Dual variables for profile constraints
             branching_duals: Dict of branching constraint duals (for SP-branching)
 
         Returns:
@@ -1766,6 +1765,12 @@ class BranchAndPrice:
 
         if branching_duals is None:
             branching_duals = {}
+
+        duals_delta = sum(value for key, value in branching_duals.items() if key[0] == profile)
+
+        print(f'Duals for profile {profile}: {duals_delta}')
+        if duals_delta != 0:
+            sys.exit()
 
         # Bestimme nächste col_id basierend auf column_pool dieses Nodes
         profile_columns = [col_id for (p, col_id) in node.column_pool.keys() if p == profile]
@@ -1778,8 +1783,9 @@ class BranchAndPrice:
         # Create subproblem mit echten Duals
         sp = Subproblem(
             self.cg_solver.data,
-            duals_p,
-            duals_td,
+            duals_gamma,
+            duals_pi,
+            duals_delta,
             profile,
             next_col_id,
             self.cg_solver.Req_agg,
