@@ -259,7 +259,7 @@ class SPVariableBranching(BranchingConstraint):
 
     def __repr__(self):
         return (f"SPBranch(profile={self.profile}, agent={self.agent}, "
-                f"period={self.period}, dir={self.dir}, level={self.level})")
+                f"period={self.period}, level={self.level})")
 
 
 class MPVariableBranching(BranchingConstraint):

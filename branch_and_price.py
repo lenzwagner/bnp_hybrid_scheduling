@@ -1410,7 +1410,6 @@ class BranchAndPrice:
         master.Model.update()
 
         # Determine branching profile (from constraints)
-        saved_profiles = set()
         branching_profile = self._get_branching_profile(node)
         if branching_profile:
             self._print(f"    [SP Saving] Branching profile: {branching_profile}")
@@ -1443,15 +1442,12 @@ class BranchAndPrice:
 
             # Get duals from master
             duals_pi, duals_gamma = master.getDuals()
-            for constr in master.Model.getConstrs():
-                print(f"{constr.ConstrName}: Dual = {constr.Pi}")
             self._print(self.branching_strategy)
 
             # Get branching constraint duals if SP-branching is used
             branching_duals = {}
             if self.branching_strategy == 'sp':
                 branching_duals = self._get_branching_constraint_duals(master, node)
-                print(branching_duals)
 
             # 3. Solve subproblems for all profiles
             new_columns_found = False
@@ -1462,19 +1458,17 @@ class BranchAndPrice:
                 sp = self._build_subproblem_for_node(
                     profile, node, duals_pi, duals_gamma, branching_duals
                 )
-                # ✅ SAVE FIRST SP FOR BRANCHING PROFILE
-                if (profile == branching_profile and
-                        profile not in saved_profiles and
-                        cg_iteration == 1):
+                # SAVE FIRST SP FOR BRANCHING PROFILE
+                if profile == branching_profile:
                     sp_filename = f"LPs/SPs/pricing/sp_node_{node.node_id}_profile_{profile}_iter{cg_iteration}.lp"
                     sp.Model.write(sp_filename)
-                    saved_profiles.add(profile)
                     self._print(f"    ✅ [SP Saved] First pricing SP for branching profile {profile}: {sp_filename}")
                 sp.solModel()
 
                 # Check reduced cost
                 if sp.Model.status == 2 and sp.Model.objVal < -threshold:
                     self._print(f'Red. cost for profile {profile} : {sp.Model.objVal}')
+                    sys.exit()
 
                     # Add column to node and master
                     self._add_column_from_subproblem(sp, profile, node, master)
@@ -1489,9 +1483,9 @@ class BranchAndPrice:
                 self._print(f"    [CG] Converged after {cg_iteration} iterations - no improving columns found")
                 break
             master.Model.update()
-        sys.exit()
         # 4. Final LP solve and integrality check
         self._print(f"\n    [Node {node.node_id}] Final LP solve...")
+        sys.exit()
         master.Model.write(f"LPs/MP/LPs/mp_final_{node.node_id}.lp")
         master.solRelModel()
         master.Model.write(f"LPs/MP/SOLs/mp_node_{node.node_id}.sol")
@@ -1632,11 +1626,8 @@ class BranchAndPrice:
             self._print(f"    [Master] Now have {len(master.Model.getConstrs())} constraints")
             self._print(f"    [Master] SP-Branching constraints added: {sp_branching_active}")
 
-            # 🛑 DEBUG EXIT
-            if sp_branching_active and node.node_id > 0:  # Don't exit at root
-                self._print(f"\n{'=' * 100}")
-                self._print(f"🛑 DEBUG EXIT: SP-Branching constraint added for Node {node.node_id}")
-                self._print(f"{'=' * 100}")
+            # DEBUG EXIT
+            if sp_branching_active and node.node_id > 0:
                 master.Model.write(f"LPs/MP/LPs/master_branch_node_{node.node_id}.lp")
 
                 # Show constraint details
@@ -1769,8 +1760,6 @@ class BranchAndPrice:
         duals_delta = sum(value for key, value in branching_duals.items() if key[0] == profile)
 
         print(f'Duals for profile {profile}: {duals_delta}')
-        if duals_delta != 0:
-            sys.exit()
 
         # Bestimme nächste col_id basierend auf column_pool dieses Nodes
         profile_columns = [col_id for (p, col_id) in node.column_pool.keys() if p == profile]
@@ -1801,44 +1790,17 @@ class BranchAndPrice:
         )
 
         sp.buildModel()
+        if profile == 55:
+            sp.Model.write(f'LPs/SPs/pricing/sp_{node.node_id}_{node.depth}_{profile}.lp')
+
 
         # Apply all branching constraints
         for constraint in node.branching_constraints:
             constraint.apply_to_subproblem(sp)
 
-        # Modify objective for SP branching constraint duals (Paper Eq. branch:sub4)
-        if self.branching_strategy == 'sp' and branching_duals:
-            self._add_branching_duals_to_objective(sp, profile, branching_duals)
-
         sp.Model.update()
-
         return sp
 
-    def _add_branching_duals_to_objective(self, sp, profile, branching_duals):
-        """
-        Modify subproblem objective to include branching constraint duals.
-
-        Paper Equation (branch:sub4):
-        Objective becomes: F_n - sum π_jt * x_njt - sum (δ^L_nl + δ^R_nl) - γ_n
-
-        Args:
-            sp: Subproblem instance
-            profile: Profile index
-            branching_duals: Dict of branching constraint duals
-        """
-        # Sum all branching constraint duals for this profile
-        dual_sum = 0.0
-
-        for (p, j, t, level), dual_val in branching_duals.items():
-            if p == profile:
-                dual_sum += dual_val
-
-        if abs(dual_sum) > 1e-10:
-            # Modify objective: subtract the sum of branching duals
-            current_obj = sp.Model.getObjective()
-            sp.Model.setObjective(current_obj - dual_sum, sense=gu.GRB.MINIMIZE)
-
-            self._print(f"        [SP Objective] Added branching dual contribution: {-dual_sum:.6f}")
 
     def _add_column_from_subproblem(self, subproblem, profile, node, master):
         """

@@ -242,7 +242,7 @@ class ColumnGeneration:
             master_start_time = time.time()
             self.master.solRelModel()
             current_lp_obj = self.master.Model.ObjVal
-            duals_gammai, duals_gamma = self.master.getDuals()
+            duals_pi, duals_gamma = self.master.getDuals()
             master_time = time.time() - master_start_time
 
             # Store LP objective history
@@ -289,7 +289,7 @@ class ColumnGeneration:
 
             # Pricing filter: determine which subproblems to solve
             patients_to_solve = self._apply_pricing_filter(
-                itr, pricing_filter_history, duals_gammai, duals_gamma, skipped_sp, skipped_sp_post
+                itr, pricing_filter_history, duals_pi, duals_gamma, skipped_sp, skipped_sp_post
             )
 
             if not patients_to_solve:
@@ -301,7 +301,7 @@ class ColumnGeneration:
                 f"Starting subproblem solving for {len(patients_to_solve)} of {len(self.P_Join)} patients on {multiprocessing.cpu_count()} cores.")
             subproblem_start_time = time.time()
             results_from_workers_with_time = self._solve_subproblems_parallel(
-                patients_to_solve, duals_gamma, duals_gammai
+                patients_to_solve, duals_gamma, duals_pi
             )
             subproblem_time = time.time() - subproblem_start_time
 
@@ -320,7 +320,7 @@ class ColumnGeneration:
                 current_duals = {
                     'bar_c': reduced_cost,
                     'gamma_n': duals_gamma[index],
-                    'pi_td': duals_gammai.copy()
+                    'pi_td': duals_pi.copy()
                 }
                 pricing_filter_history[(index, itr)] = current_duals
 
@@ -368,7 +368,7 @@ class ColumnGeneration:
         else:
             print(f"\nColumn Generation finished after {itr} iterations (convergence).")
 
-    def _apply_pricing_filter(self, itr, pricing_filter_history, duals_gammai, duals_gamma,
+    def _apply_pricing_filter(self, itr, pricing_filter_history, duals_pi, duals_gamma,
                               skipped_sp, skipped_sp_post):
         """
         Apply pricing filter to determine which subproblems need to be solved.
@@ -385,7 +385,7 @@ class ColumnGeneration:
                     ell = max(previous_iterations)
                     hist = pricing_filter_history[(index, ell)]
                     lb = hist['bar_c'] + hist['gamma_n'] - duals_gamma[index]
-                    sum_term = sum(min(0, hist['pi_td'].get(key, 0) - duals_gammai.get(key, 0))
+                    sum_term = sum(min(0, hist['pi_td'].get(key, 0) - duals_pi.get(key, 0))
                                    for key in hist['pi_td'])
                     lb += sum_term
 
@@ -402,13 +402,18 @@ class ColumnGeneration:
 
         return patients_to_solve
 
-    def _solve_subproblems_parallel(self, patients_to_solve, duals_gamma, duals_gammai):
+    def _solve_subproblems_parallel(self, patients_to_solve, duals_gamma, duals_pi):
         """
         Solve subproblems in parallel using multiprocessing.
         """
+        duals_delta = 0
+        node_path = ''  # Root node
+
         tasks_args = [
-            (index, duals_gamma, duals_gammai, self.data, self.Req_agg, self.Entry_agg,
-             self.app_data, self.W_coeff, self.E_dict, self.therapist_type, self.P_F, self.S_Bound, self.learn_method)
+            (index, duals_gamma, duals_pi, duals_delta,
+             self.data, self.Req_agg, self.Entry_agg,
+             self.app_data, self.W_coeff, self.E_dict, self.therapist_type,
+             self.P_F, self.S_Bound, self.learn_method, node_path)
             for index in patients_to_solve
         ]
 
@@ -589,13 +594,13 @@ def solve_subproblem_for_patient(args):
     worker_start_time = time.time()
 
     # Unpack arguments
-    (index, duals_gamma, duals_gammai, data, Req_agg, Entry_agg, app_data, W_coeff,
-     E_dict, therapist_type, P_F, S_Bound, learn_meth) = args
+    (index, duals_gamma, duals_pi, duals_delta, data, Req_agg, Entry_agg, app_data, W_coeff,
+     E_dict, therapist_type, P_F, S_Bound, learn_meth, node_path) = args
     max_cols_per_iter = 10
 
     # Create and solve subproblem
     subproblem = Subproblem(
-        data, duals_gamma, duals_gammai, index, 0, Req_agg, Entry_agg,
+        data, duals_gamma, duals_pi, duals_delta, index, 0, Req_agg, Entry_agg,
         app_data, W_coeff, E_dict, S_Bound, num_tangents=10, reduction=True, learn_method=learn_meth,  node_path=''
     )
     subproblem.buildModel()

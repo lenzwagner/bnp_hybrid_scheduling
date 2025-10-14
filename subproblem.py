@@ -33,9 +33,8 @@ class Subproblem:
         self.M = max(self.D) + 1
         self.S_Bound = S_Bound[self.P]
         self.R = list(range(1, 1 + self.S_Bound))
-        if self.duals_delta != 0:
-            print(f'Duals delta is: {self.duals_delta} for profile {self.P}')
-            sys.exit()
+        print(f'Duals for {self.P} in itr. {self.itr}: {self.duals_gamma,self.duals_pi}')
+
 
     def _init_day_horizon(self):
         """Initialize the day horizon with optional reduction."""
@@ -504,7 +503,7 @@ class Subproblem:
             self.E[self.P] * self.LOS[self.P, self.col_id] -
             gu.quicksum(self.x[self.P, t, d, self.col_id] * self.duals_pi[t, d]
                         for t in self.T for d in self.D) -
-            self.duals_gamma[self.P] - self.duals_gamma,
+            self.duals_gamma[self.P] - self.duals_delta,
             sense=gu.GRB.MINIMIZE
         )
 
