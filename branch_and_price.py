@@ -312,6 +312,7 @@ class BranchAndPrice:
         # Final LP relaxation check
         self._print("\n[Root] Final LP relaxation check...")
         self.cg_solver.master.solRelModel()
+
         is_integral, lp_bound, most_frac_info = self.cg_solver.master.check_fractionality()
 
         # Update root node
@@ -348,7 +349,8 @@ class BranchAndPrice:
         self._print(" ROOT NODE SOLVED ".center(100, "="))
         self._print(f"{'=' * 100}\n")
 
-        return lp_bound, is_integral, most_frac_info
+        return lp_bound, is_integral, most_frac_info, self.cg_solver.master.lmbda
+
 
     def _compute_final_incumbent(self):
         """
@@ -701,7 +703,7 @@ class BranchAndPrice:
         if self.search_strategy == 'bfs':
             self.open_nodes.pop()  # Remove placeholder
 
-        lp_bound, is_integral, frac_info = self.solve_root_node()
+        lp_bound, is_integral, frac_info, root_lambdas = self.solve_root_node()
         self.stats['nodes_explored'] = 1
 
         # Add root node to open list with its solved bound for 'bfs'
@@ -728,7 +730,7 @@ class BranchAndPrice:
             self.open_nodes.pop()
 
         # Branch on root
-        branching_type, branching_info = self.select_branching_candidate(root_node)
+        branching_type, branching_info = self.select_branching_candidate(root_node, root_lambdas)
         print(branching_info, branching_type)
 
         if not branching_type:
@@ -821,7 +823,7 @@ class BranchAndPrice:
             # SOLVE NODE WITH COLUMN GENERATION
             # ========================================
             try:
-                lp_bound, is_integral, most_frac_info = self.solve_node_with_cg(
+                lp_bound, is_integral, most_frac_info, node_lambdas = self.solve_node_with_cg(
                     current_node, max_cg_iterations=50
                 )
             except Exception as e:
@@ -861,7 +863,7 @@ class BranchAndPrice:
             self._print(f"\n⚠️  Node {current_node_id} requires branching (LP is fractional)")
 
             # Select branching candidate
-            branching_type, branching_info = self.select_branching_candidate(current_node)
+            branching_type, branching_info = self.select_branching_candidate(current_node, node_lambdas)
 
             if not branching_type:
                 self._print(f"❌ Could not find branching candidate at node {current_node_id}")
@@ -1022,7 +1024,7 @@ class BranchAndPrice:
     # BRANCHING LOGIC
     # ============================================================================
 
-    def select_branching_candidate(self, node):
+    def select_branching_candidate(self, node, node_lambda):
         """
         Select the most fractional variable for branching.
 
@@ -1038,10 +1040,12 @@ class BranchAndPrice:
         Returns:
             tuple: (branching_type, branching_info) or (None, None) if no fractional var
         """
+        print(node_lambda)
+        sys.exit()
         if self.branching_strategy == 'mp':
-            return self._select_mp_branching_candidate(node)
+            return self._select_mp_branching_candidate(node, node_lambda)
         elif self.branching_strategy == 'sp':
-            return self._select_sp_branching_candidate(node)
+            return self._select_sp_branching_candidate(node, node_lambda)
         else:
             raise ValueError(f"Unknown branching strategy: {self.branching_strategy}")
 
@@ -1078,7 +1082,7 @@ class BranchAndPrice:
 
         return 'mp', branching_info
 
-    def _select_sp_branching_candidate(self, node):
+    def _select_sp_branching_candidate(self, node, lambda_list):
         """
         Select most fractional beta_{njt} for SP branching.
 
@@ -1089,20 +1093,18 @@ class BranchAndPrice:
         Returns:
             tuple: ('sp', branching_info) or (None, None)
         """
-        master = self.cg_solver.master
-
         beta_values = {}
+
 
         self._print(f"\n[SP Branching] Computing beta values from node.column_pool...")
         self._print(f"  Column pool size: {len(node.column_pool)}")
-        self._print(f"  Lambda values size: {len(master.lmbda.items())}")
+        self._print(f"  Lambda values size: {len(lambda_list)}")
 
-        if len(node.column_pool) != len(master.lmbda.items()):
+        if len(node.column_pool) != len(lambda_list):
             self._print(f"  ⚠️  Lambda pool is not equal sized as the column pool")
 
-
         # Iterate over Lambda variables to get their current LP values
-        for (n, a), var in master.lmbda.items():
+        for (n, a), var in lambda_list:
             lambda_val = var.X
 
             if lambda_val < 1e-6:
@@ -1421,6 +1423,11 @@ class BranchAndPrice:
         node_start_time = time.time()
         NODE_TIME_LIMIT = 300
 
+        self._print(f"\n    [Debug] Constraints BEFORE CG loop:")
+        for c in master.Model.getConstrs():
+            if 'sp_branch' in c.ConstrName:
+                self._print(f"      {c.ConstrName}: {c.Sense} {c.RHS}")
+
         while cg_iteration < max_cg_iterations:
             if time.time() - node_start_time > NODE_TIME_LIMIT:
                 self._print(f"⏱️  Node {node.node_id} time limit reached")
@@ -1510,13 +1517,12 @@ class BranchAndPrice:
 
         self.stats['total_cg_iterations'] += cg_iteration
 
-        print(node.node_id)
 
         if node.node_id > 1:
             sys.exit()
 
 
-        return lp_obj, is_integral, most_frac_info
+        return lp_obj, is_integral, most_frac_info, master.lmbda
 
     def _build_master_for_node(self, node):
         """
@@ -1868,6 +1874,7 @@ class BranchAndPrice:
                                     and c.master_constraint is not None]
 
         print('SP-COnst', node.branching_constraints)
+        sys.exit()
 
         if sp_branching_constraints:
             branching_coefs = self._compute_branching_coefficients_for_column(

@@ -90,66 +90,33 @@ class SPVariableBranching(BranchingConstraint):
         self.master_constraint = None  # Store reference to created constraint
 
     def apply_to_master(self, master, node):
-        """
-        Add constraint to master problem using node's column pool.
-
-        Paper Equation (branch:sub2):
-        Left:  sum_{a: chi^a_{njt}=1} Lambda_{na} = 0  (no assignment allowed)
-        Right: sum_{a: chi^a_{njt}=1} Lambda_{na} >= 1  (at least one assignment)
-        """
+        """Add constraint to master and set coefficients for initial columns."""
         n, j, t = self.profile, self.agent, self.period
 
-        print(f'\n    {"=" * 80}')
-        print(f'    [SP Branch] Applying constraint for Node {node.node_id}')
-        print(f'    [SP Branch] Profile {n}, Agent {j}, Period {t}')
-
-        # ✅ Find all columns in NODE's column pool where chi^a_{njt} = 1
+        # Find relevant columns
         relevant_columns = []
-
-        # Filter all columns for profile n
         for (p, a), col_data in node.column_pool.items():
             if p != n:
-                continue  # Only check columns for this profile
+                continue
 
             schedules_x = col_data.get('schedules_x', {})
-
-            # Check if this column has assignment (n, j, t)
-            # Key format in schedules_x: (n, j, t, 0) - always with 0 at the end!
             assignment_key = (n, j, t, 0)
 
-            if assignment_key in schedules_x:
-                value = schedules_x[assignment_key]
-                print(f'    [SP Branch] Column {a}: schedules_x[{assignment_key}] = {value}')
-
-                if value > 0.5:  # Assignment exists
-                    relevant_columns.append(a)
-                    print(f'    [SP Branch]   ✅ Column {a} added to relevant_columns')
-
-        print(f'    [SP Branch] Relevant columns: {relevant_columns}')
-        print(f'    {"=" * 80}\n')
+            if assignment_key in schedules_x and schedules_x[assignment_key] > 0.5:
+                relevant_columns.append(a)
 
         if not relevant_columns:
-            print(f'    ⚠️  [SP Branch] No relevant columns found - constraint trivially satisfied')
             return
 
-        # Verify Lambda variables exist
-        existing_lambdas = [(n, a) for a in relevant_columns if (n, a) in master.lmbda]
-        print(f'    [SP Branch] Lambda variables exist: {existing_lambdas}')
+        # Create constraint
+        lhs = gu.quicksum(master.lmbda[n, a] for a in relevant_columns if (n, a) in master.lmbda)
 
-        if not existing_lambdas:
-            print(f'    ❌ [SP Branch] ERROR: No Lambda variables found!')
-            return
-
-        # Create constraint expression
-        lhs = gu.quicksum(master.lmbda[n, a] for (n_key, a) in existing_lambdas)
-        print('LHS',lhs)
-
-        if self.dir == 'left':  # Left branch
+        if self.dir == 'left':
             self.master_constraint = master.Model.addConstr(
                 lhs <= self.floor,
                 name=f"sp_branch_L{self.level}_{n}_{j}_{t}"
             )
-        else:  # Right branch
+        else:
             self.master_constraint = master.Model.addConstr(
                 lhs >= self.ceil,
                 name=f"sp_branch_R{self.level}_{n}_{j}_{t}"
@@ -157,11 +124,12 @@ class SPVariableBranching(BranchingConstraint):
 
         master.Model.update()
 
-        # Verify constraint was added
-        for c in master.Model.getConstrs():
-            if c.ConstrName == self.master_constraint.ConstrName:
-                print(f'    ✅ [SP Branch] Constraint verified in model!')
-                break
+        # ✅ Set coefficients for EXISTING initial column (col_id=1)
+        if (n, 1) in master.lmbda:
+            if 1 in relevant_columns:
+                master.Model.chgCoeff(self.master_constraint, master.lmbda[n, 1], 1)
+                print(f"    [SP Branch] Set coefficient for Lambda[{n},1] in constraint")
+
 
     def apply_to_subproblem(self, subproblem):
         """
@@ -248,7 +216,7 @@ class MPVariableBranching(BranchingConstraint):
         self.direction = direction  # 'left' or 'right'
         self.original_schedule = original_schedule  # For no-good cut
 
-    def apply_to_master(self, master, node):  # ← node Parameter hinzugefügt (auch wenn hier nicht gebraucht)
+    def apply_to_master(self, master, node):
         """
         Set variable bounds on Lambda_{na}.
         """
