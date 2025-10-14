@@ -48,19 +48,6 @@ class BranchingConstraint(ABC):
         """
         pass
 
-    @abstractmethod
-    def get_dual_contribution(self, for_profile):
-        """
-        Get the dual variable contribution for pricing.
-
-        Args:
-            for_profile: Profile index of the subproblem being priced
-
-        Returns:
-            float: Contribution to reduced cost from this constraint's dual
-        """
-        pass
-
 
 class SPVariableBranching(BranchingConstraint):
     """
@@ -226,37 +213,6 @@ class SPVariableBranching(BranchingConstraint):
         # If not found in schedule, it's implicitly 0
         return (self.value == 0)
 
-    def get_dual_contribution(self, for_profile):
-        """
-        Get dual contribution for pricing objective.
-
-        IMPORTANT: This dual is only relevant for the specific profile n
-        that this constraint applies to. Other profiles are unaffected.
-
-        Paper Equation (branch:sub4):
-        For SP_n: Reduced cost includes: - sum_{l in L(n)} (delta^L_{nl} + delta^R_{nl})
-        For SP_m (m != n): No contribution
-
-        Args:
-            for_profile: Profile index of the subproblem being priced
-
-        Returns:
-            float: -(delta^L + delta^R) if for_profile == self.profile, else 0.0
-        """
-        # Only apply to the specific profile this constraint was created for
-        if for_profile != self.profile:
-            return 0.0
-
-        if self.master_constraint is None:
-            return 0.0
-
-        # Get dual value from master constraint
-        try:
-            dual_val = self.master_constraint.Pi
-            return -dual_val  # Negative because it's subtracted in reduced cost
-        except:
-            return 0.0
-
     def __repr__(self):
         return (f"SPBranch(profile={self.profile}, agent={self.agent}, "
                 f"period={self.period}, level={self.level})")
@@ -383,22 +339,6 @@ class MPVariableBranching(BranchingConstraint):
         """
         # MP branching doesn't filter columns - only sets variable bounds
         return True
-
-    def get_dual_contribution(self, for_profile):
-        """
-        Get dual contribution for pricing objective.
-
-        MP variable branching only affects existing columns via bounds.
-        These bounds are handled in the dual space naturally by Gurobi,
-        so no explicit contribution to reduced cost is needed.
-
-        Args:
-            for_profile: Profile index (not used for MP branching)
-
-        Returns:
-            float: 0.0
-        """
-        return 0.0
 
     def __repr__(self):
         return (f"MPBranch(profile={self.profile}, column={self.column}, "
