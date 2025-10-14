@@ -885,7 +885,6 @@ class BranchAndPrice:
             self._print(f"   ├─ Left:  Node {left_child.node_id} (path: '{left_child.path}')")
             self._print(f"   └─ Right: Node {right_child.node_id} (path: '{right_child.path}')")
             self._print(f"\n   Open nodes queue: {self.open_nodes}")
-            sys.exit()
 
         # ========================================
         # FINALIZATION
@@ -1511,7 +1510,10 @@ class BranchAndPrice:
 
         self.stats['total_cg_iterations'] += cg_iteration
 
-        sys.exit()
+        print(node.node_id)
+
+        if node.node_id > 1:
+            sys.exit()
 
 
         return lp_obj, is_integral, most_frac_info
@@ -1814,9 +1816,6 @@ class BranchAndPrice:
         )
 
         sp.buildModel()
-        if profile == 55:
-            sp.Model.write(f'LPs/SPs/pricing/sp_{node.node_id}_{node.depth}_{profile}.lp')
-
 
         # Apply all branching constraints
         for constraint in node.branching_constraints:
@@ -1825,16 +1824,11 @@ class BranchAndPrice:
         sp.Model.update()
         return sp
 
-
     def _add_column_from_subproblem(self, subproblem, profile, node, master):
         """
         Add a column generated from a subproblem to node and master.
 
-        Args:
-            subproblem: Solved Subproblem instance
-            profile: Profile index
-            node: BnPNode
-            master: MasterProblem_d instance
+        CRITICAL: Must compute branching coefficients for SP-branching constraints!
         """
         col_id = subproblem.col_id
 
@@ -1863,14 +1857,47 @@ class BranchAndPrice:
         # Create coefficient lists
         lambda_list = self._create_lambda_list(profile)
 
+        # Basic coefficients
+        col_coefs = lambda_list + x_list
+
+        # ========================================================================
+        # ADD SP-BRANCHING COEFFICIENTS IF NEEDED
+        # ========================================================================
+        sp_branching_constraints = [c for c in node.branching_constraints
+                                    if hasattr(c, 'master_constraint')
+                                    and c.master_constraint is not None]
+
+        print('SP-COnst', node.branching_constraints)
+
+        if sp_branching_constraints:
+            branching_coefs = self._compute_branching_coefficients_for_column(
+                col_data, profile, col_id, node.branching_constraints
+            )
+            col_coefs = col_coefs + branching_coefs
+
+            print(f'New_Coeffs for profile {profile} are: {branching_coefs}')
+
+            self._print(f"        [Column] Added {len(branching_coefs)} branching coefficients "
+                        f"for new column ({profile}, {col_id})")
+
+        # Verify length
+        expected_length = len(master.Model.getConstrs())
+        actual_length = len(col_coefs)
+
+        if actual_length != expected_length:
+            self._print(f"        ❌ ERROR: Coefficient mismatch when adding new column!")
+            self._print(f"           Expected: {expected_length}, Got: {actual_length}")
+            raise ValueError("Coefficient vector length mismatch!")
+
+        # Add variable to master
         master.addLambdaVar(
             profile, col_id,
-            lambda_list + x_list,
+            col_coefs,
             los_list
         )
 
-        self._print(
-            f"        [Column] Added column ({profile}, {col_id}) with reduced costd {subproblem.Model.objVal:.6f}")
+        self._print(f"        [Column] Added column ({profile}, {col_id}) "
+                    f"with reduced cost {subproblem.Model.objVal:.6f}")
 
     def branch_on_sp_variable(self, parent_node, branching_info):
         """
