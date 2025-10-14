@@ -313,6 +313,8 @@ class BranchAndPrice:
         self._print("\n[Root] Final LP relaxation check...")
         self.cg_solver.master.solRelModel()
 
+        lambda_list_root = self.cg_solver.master.lmbda
+
         is_integral, lp_bound, most_frac_info = self.cg_solver.master.check_fractionality()
 
         # Update root node
@@ -349,7 +351,7 @@ class BranchAndPrice:
         self._print(" ROOT NODE SOLVED ".center(100, "="))
         self._print(f"{'=' * 100}\n")
 
-        return lp_bound, is_integral, most_frac_info, self.cg_solver.master.lmbda
+        return lp_bound, is_integral, most_frac_info, lambda_list_root
 
 
     def _compute_final_incumbent(self):
@@ -863,6 +865,8 @@ class BranchAndPrice:
             self._print(f"\n⚠️  Node {current_node_id} requires branching (LP is fractional)")
 
             # Select branching candidate
+            print(node_lambdas, root_lambdas, sep="\n")
+            sys.exit()
             branching_type, branching_info = self.select_branching_candidate(current_node, node_lambdas)
 
             if not branching_type:
@@ -1040,8 +1044,6 @@ class BranchAndPrice:
         Returns:
             tuple: (branching_type, branching_info) or (None, None) if no fractional var
         """
-        print(node_lambda)
-        sys.exit()
         if self.branching_strategy == 'mp':
             return self._select_mp_branching_candidate(node, node_lambda)
         elif self.branching_strategy == 'sp':
@@ -1082,7 +1084,7 @@ class BranchAndPrice:
 
         return 'mp', branching_info
 
-    def _select_sp_branching_candidate(self, node, lambda_list):
+    def _select_sp_branching_candidate(self, node, lambdas):
         """
         Select most fractional beta_{njt} for SP branching.
 
@@ -1098,13 +1100,14 @@ class BranchAndPrice:
 
         self._print(f"\n[SP Branching] Computing beta values from node.column_pool...")
         self._print(f"  Column pool size: {len(node.column_pool)}")
-        self._print(f"  Lambda values size: {len(lambda_list)}")
+        self._print(f"  Lambda values size: {len(lambdas)}")
 
-        if len(node.column_pool) != len(lambda_list):
+        if len(node.column_pool) != len(lambdas):
             self._print(f"  ⚠️  Lambda pool is not equal sized as the column pool")
 
         # Iterate over Lambda variables to get their current LP values
-        for (n, a), var in lambda_list:
+        sys.exit()
+        for (n, a), var in lambdas.items():
             lambda_val = var.X
 
             if lambda_val < 1e-6:
@@ -1443,6 +1446,8 @@ class BranchAndPrice:
                 self._print(f"    ⚠️  Master infeasible or unbounded at node {node.node_id}")
                 return float('inf'), False, None
 
+            lambda_list_cg = master.lmbda
+
             current_lp_obj = master.Model.objVal
             self._print(f"    [CG Iter {cg_iteration}] LP objective: {current_lp_obj:.6f}")
 
@@ -1522,7 +1527,7 @@ class BranchAndPrice:
             sys.exit()
 
 
-        return lp_obj, is_integral, most_frac_info, master.lmbda
+        return lp_obj, is_integral, most_frac_info, lambda_list_cg
 
     def _build_master_for_node(self, node):
         """
