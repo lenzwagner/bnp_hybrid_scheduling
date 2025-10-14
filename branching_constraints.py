@@ -119,6 +119,11 @@ class SPVariableBranching(BranchingConstraint):
         # ✅ Find all columns in NODE's column pool where chi^a_{njt} = 1
         relevant_columns = []
 
+        columns_with_id_1 = {key: value for key, value in node.column_pool.items() if key[1] == 1}
+        print(columns_with_id_1)
+
+        sys.exit()
+
         # Filter all columns for profile n
         for (p, a), col_data in node.column_pool.items():
             if p != n:

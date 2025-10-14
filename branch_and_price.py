@@ -290,6 +290,9 @@ class BranchAndPrice:
 
         # Solve with Column Generation
         self.cg_solver.solve_cg()
+        self.cg_solver.master.Model.write('Root.lp')
+        self.cg_solver.master.Model.write('Root.sol')
+
 
         # After CG converges: Check if we need to compute incumbent
         if not self.incumbent_computed_early:
@@ -1092,6 +1095,7 @@ class BranchAndPrice:
             tuple: ('sp', branching_info) or (None, None)
         """
         master = self.cg_solver.master
+
         beta_values = {}
 
         self._print(f"\n[SP Branching] Computing beta values from node.column_pool...")
@@ -1100,6 +1104,8 @@ class BranchAndPrice:
         # Iterate over Lambda variables to get their current LP values
         for (n, a), var in master.lmbda.items():
             lambda_val = var.X
+            if a == 1 and n == 55:
+                print(f'Lambda {lambda_val:.6f} for (n,a) {n,a}')
 
             if lambda_val < 1e-6:
                 continue
@@ -1126,6 +1132,7 @@ class BranchAndPrice:
                     beta_values[key] = beta_values.get(key, 0.0) + lambda_val
 
         self._print(f"  Found {len(beta_values)} non-zero beta values")
+        sys.exit()
 
         # Find most fractional beta
         best_candidate = None
