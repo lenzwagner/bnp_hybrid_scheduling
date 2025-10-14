@@ -313,7 +313,9 @@ class BranchAndPrice:
         self._print("\n[Root] Final LP relaxation check...")
         self.cg_solver.master.solRelModel()
 
-        lambda_list_root = self.cg_solver.master.lmbda
+        lambda_list_root = {
+        key: var.X for key, var in self.cg_solver.master.lmbda.items()
+        }
 
         is_integral, lp_bound, most_frac_info = self.cg_solver.master.check_fractionality()
 
@@ -865,8 +867,6 @@ class BranchAndPrice:
             self._print(f"\n⚠️  Node {current_node_id} requires branching (LP is fractional)")
 
             # Select branching candidate
-            print(node_lambdas, root_lambdas, sep="\n")
-            sys.exit()
             branching_type, branching_info = self.select_branching_candidate(current_node, node_lambdas)
 
             if not branching_type:
@@ -1106,14 +1106,14 @@ class BranchAndPrice:
             self._print(f"  ⚠️  Lambda pool is not equal sized as the column pool")
 
         # Iterate over Lambda variables to get their current LP values
-        sys.exit()
-        for (n, a), var in lambdas.items():
-            lambda_val = var.X
+        print(lambdas)
+        for (n, a), lambda_val in lambdas.items():
 
+            # lambda_val ist bereits ein Float - kein .X mehr nötig!
             if lambda_val < 1e-6:
                 continue
 
-            # Get column data from node's column pool using correct (profile, column_id)
+            # Get column data from node's column pool
             if (n, a) not in node.column_pool:
                 self._print(f"  ⚠️  Lambda[{n},{a}] = {lambda_val:.4f} but column not in pool!")
                 continue
@@ -1446,8 +1446,6 @@ class BranchAndPrice:
                 self._print(f"    ⚠️  Master infeasible or unbounded at node {node.node_id}")
                 return float('inf'), False, None
 
-            lambda_list_cg = master.lmbda
-
             current_lp_obj = master.Model.objVal
             self._print(f"    [CG Iter {cg_iteration}] LP objective: {current_lp_obj:.6f}")
 
@@ -1497,6 +1495,9 @@ class BranchAndPrice:
         self._print(f"\n    [Node {node.node_id}] Final LP solve...")
         master.Model.write(f"LPs/MP/LPs/mp_final_{node.node_id}.lp")
         master.solRelModel()
+        lambda_list_cg = {
+            key: var.X for key, var in master.lmbda.items()
+        }
         master.Model.write(f"LPs/MP/SOLs/mp_node_{node.node_id}.sol")
         is_integral, lp_obj, most_frac_info = master.check_fractionality()
 
@@ -1521,11 +1522,6 @@ class BranchAndPrice:
         self._print(f"{'─' * 100}\n")
 
         self.stats['total_cg_iterations'] += cg_iteration
-
-
-        if node.node_id > 1:
-            sys.exit()
-
 
         return lp_obj, is_integral, most_frac_info, lambda_list_cg
 

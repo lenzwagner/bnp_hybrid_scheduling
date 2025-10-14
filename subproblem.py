@@ -33,7 +33,8 @@ class Subproblem:
         self.M = max(self.D) + 1
         self.S_Bound = S_Bound[self.P]
         self.R = list(range(1, 1 + self.S_Bound))
-        print(f'Duals for {self.P} in itr. {self.itr}: {self.duals_gamma,self.duals_pi}')
+        if self.duals_delta != 0:
+            print(f'Duals for {self.P} in itr. {self.itr}: {self.duals_delta, self.duals_gamma}')
 
 
     def _init_day_horizon(self):
