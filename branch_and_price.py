@@ -1468,7 +1468,6 @@ class BranchAndPrice:
                 # Check reduced cost
                 if sp.Model.status == 2 and sp.Model.objVal < -threshold:
                     self._print(f'Red. cost for profile {profile} : {sp.Model.objVal}')
-                    sys.exit()
 
                     # Add column to node and master
                     self._add_column_from_subproblem(sp, profile, node, master)
@@ -1485,7 +1484,6 @@ class BranchAndPrice:
             master.Model.update()
         # 4. Final LP solve and integrality check
         self._print(f"\n    [Node {node.node_id}] Final LP solve...")
-        sys.exit()
         master.Model.write(f"LPs/MP/LPs/mp_final_{node.node_id}.lp")
         master.solRelModel()
         master.Model.write(f"LPs/MP/SOLs/mp_node_{node.node_id}.sol")
@@ -1512,6 +1510,9 @@ class BranchAndPrice:
         self._print(f"{'─' * 100}\n")
 
         self.stats['total_cg_iterations'] += cg_iteration
+
+        sys.exit()
+
 
         return lp_obj, is_integral, most_frac_info
 
