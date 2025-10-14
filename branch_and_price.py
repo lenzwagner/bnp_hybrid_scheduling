@@ -111,8 +111,7 @@ class BranchAndPrice:
         import os
         os.makedirs("LPs/MP/LPs", exist_ok=True)
         os.makedirs("LPs/MP/SOLs", exist_ok=True)
-        os.makedirs("LPs/SPs/left", exist_ok=True)
-        os.makedirs("LPs/SPs/right", exist_ok=True)
+        os.makedirs("LPs/SPs/pricing", exist_ok=True)
 
     def _print(self, *args, **kwargs):
         """Print only if verbose mode is enabled."""
@@ -175,7 +174,6 @@ class BranchAndPrice:
 
         # Transfer initial columns from CG solver
         for (p, old_col_id) in self.cg_solver.global_solutions.get('x', {}).keys():
-            # WICHTIG: Verwende die RICHTIGE column_id aus dem CG solver
             col_id = old_col_id
 
             # Extract schedules_x from global_solutions
@@ -290,8 +288,6 @@ class BranchAndPrice:
 
         # Solve with Column Generation
         self.cg_solver.solve_cg()
-        self.cg_solver.master.Model.write('Root.lp')
-        self.cg_solver.master.Model.write('Root.sol')
 
 
         # After CG converges: Check if we need to compute incumbent
@@ -344,7 +340,8 @@ class BranchAndPrice:
         self.best_lp_bound = lp_bound
         self.update_gap()
 
-        # Save initial Root-Sol
+        # Save initial Root-LP/SOL
+        self.cg_solver.master.Model.write('LPs/MP/LPs/Root.lp')
         self.cg_solver.master.Model.write('LPs/MP/SOLs/Root.sol')
 
         self._print(f"\n{'=' * 100}")
@@ -744,8 +741,7 @@ class BranchAndPrice:
             left_child, right_child = self.branch_on_mp_variable(root_node, branching_info)
         else:  # 'sp'
             left_child, right_child = self.branch_on_sp_variable(root_node, branching_info)
-
-        sys.exit()
+        print(left_child, right_child)
         # Mark root as branched
         root_node.status = 'branched'
         self.stats['nodes_branched'] += 1
@@ -1266,7 +1262,6 @@ class BranchAndPrice:
 
         # Inherit compatible columns from parent
         self._inherit_columns_from_parent(left_child, parent_node)
-        self._save_subproblem_for_branching_profile(left_child, n, True)
 
         # -------------------------
         # RIGHT CHILD
@@ -1293,7 +1288,6 @@ class BranchAndPrice:
 
         # Inherit all columns (no restriction on right branch)
         self._inherit_columns_from_parent(right_child, parent_node)
-        self._save_subproblem_for_branching_profile(right_child, n, False)
 
         # -------------------------
         # EVALUATE AND STORE NODES
@@ -1417,6 +1411,12 @@ class BranchAndPrice:
         master.Model.write(f"LPs/MP/LPs/mp_root_{node.node_id}.lp")
         self._print(f"    [Master] Saved LP to: LPs/MP/LPs/mp_root_{node.node_id}.lp")
 
+        # Determine branching profile (from constraints)
+        saved_profiles = set()
+        branching_profile = self._get_branching_profile(node)
+        if branching_profile:
+            self._print(f"    [SP Saving] Branching profile: {branching_profile}")
+
         # 2. Column Generation loop
         threshold = self.cg_solver.threshold  # Use same threshold as CG
         cg_iteration = 0
@@ -1455,7 +1455,6 @@ class BranchAndPrice:
 
             # 3. Solve subproblems for all profiles
             new_columns_found = False
-            counter = 0
             columns_added_this_iter = 0
 
             for profile in self.cg_solver.P_Join:
@@ -1463,6 +1462,15 @@ class BranchAndPrice:
                 sp = self._build_subproblem_for_node(
                     profile, node, duals_td, duals_p, branching_duals
                 )
+                # ✅ SAVE FIRST SP FOR BRANCHING PROFILE
+                if (profile == branching_profile and
+                        profile not in saved_profiles and
+                        cg_iteration == 1):
+                    sp_filename = f"LPs/SPs/pricing/sp_node_{node.node_id}_profile_{profile}_iter{cg_iteration}.lp"
+                    sp.Model.write(sp_filename)
+                    saved_profiles.add(profile)
+                    self._print(f"    ✅ [SP Saved] First pricing SP for branching profile {profile}: {sp_filename}")
+                    sys.exit()
                 sp.solModel()
 
                 # Check reduced cost
@@ -1490,7 +1498,6 @@ class BranchAndPrice:
         master.Model.write(f"LPs/MP/SOLs/mp_node_{node.node_id}.sol")
         is_integral, lp_obj, most_frac_info = master.check_fractionality()
 
-        # >>> NEU: Wenn integral → .sol speichern und beenden <<<
         if is_integral:
             self._print(f"\n✅ INTEGRAL SOLUTION FOUND AT NODE {node.node_id}!")
             self._print(f"   LP Bound: {lp_obj:.6f}")
@@ -1932,7 +1939,6 @@ class BranchAndPrice:
         left_child.branching_constraints.append(left_constraint)
 
         self._inherit_columns_from_parent(left_child, parent_node)
-        self._save_subproblem_for_branching_profile(left_child, n, True)
 
         # -------------------------
         # RIGHT CHILD
@@ -1960,7 +1966,6 @@ class BranchAndPrice:
         right_child.branching_constraints.append(right_constraint)
 
         self._inherit_columns_from_parent(right_child, parent_node)
-        self._save_subproblem_for_branching_profile(right_child, n, False)
 
         # -------------------------
         # EVALUATE AND STORE NODES
@@ -2078,52 +2083,6 @@ class BranchAndPrice:
         if len(col_per_profile) > 5:
             self._print(f"  ... and {len(col_per_profile) - 5} more profiles")
         self._print()
-
-    def _save_subproblem_for_branching_profile(self, node, profile, isLeft=True):
-        """
-        Build and save the subproblem for a given profile at a node (without solving it).
-        Used to debug or inspect the SP used for branching.
-        """
-        # Dummy duals – since we only want the model structure, not pricing
-        dummy_duals_td = {(t, d): 0.0 for t in list(range(1, max(key[1] for key in self.start_x.keys()) + 1)) for d in
-                          list(range(1, max(key[2] for key in self.start_x.keys()) + 1))}
-        dummy_duals_p = {p: 0.0 for p in self.cg_solver.P_Join}
-
-        # Determine next col_id (not critical for model structure)
-        profile_columns = [col_id for (p, col_id) in node.column_pool.keys() if p == profile]
-        next_col_id = max(profile_columns) + 1 if profile_columns else 1
-
-        from subproblem import Subproblem
-        sp = Subproblem(
-            self.cg_solver.data,
-            dummy_duals_p,
-            dummy_duals_td,
-            profile,
-            next_col_id,
-            self.cg_solver.Req_agg,
-            self.cg_solver.Entry_agg,
-            self.cg_solver.app_data,
-            self.cg_solver.W_coeff,
-            self.cg_solver.E_dict,
-            self.cg_solver.S_Bound,
-            learn_method=self.cg_solver.learn_method,
-            reduction=True,
-            num_tangents=10,
-            node_path=node.path
-        )
-        sp.buildModel()
-
-        # Apply branching constraints
-        for constraint in node.branching_constraints:
-            constraint.apply_to_subproblem(sp)
-
-        sp.Model.update()
-        if isLeft:
-            filename = f"LPs/SPs/left/sp_node_{node.node_id}_profile_{profile}_left.lp"
-        else:
-            filename = f"LPs/SPs/right/sp_node_{node.node_id}_profile_{profile}_right.lp"
-        sp.Model.write(filename)
-        self._print(f"    [Subproblem] Saved SP for profile {profile} to: {filename}")
 
     def _finalize_and_print_results(self):
         """
@@ -2464,3 +2423,22 @@ class BranchAndPrice:
                 self.open_nodes = [i for i in self.open_nodes if i not in nodes_to_remove]
 
         return fathomed_count
+
+    def _get_branching_profile(self, node):
+        """
+        Extract the branching profile from node's constraints.
+
+        Returns:
+            int or None: Profile that was branched on (n), or None if root
+        """
+        if not node.branching_constraints:
+            return None
+
+        # Get the most recent branching constraint (last one added)
+        last_constraint = node.branching_constraints[-1]
+
+        # Both SP and MP branching have a 'profile' attribute
+        if hasattr(last_constraint, 'profile'):
+            return last_constraint.profile
+
+        return None
