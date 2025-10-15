@@ -1496,9 +1496,14 @@ class BranchAndPrice:
         self._print(f"\n    [Node {node.node_id}] Final LP solve...")
         master.Model.write(f"LPs/MP/LPs/mp_final_{node.node_id}.lp")
         master.solRelModel()
-        lambda_list_cg = {
-            key: var.X for key, var in master.lmbda.items()
-        }
+
+        if master.Model.status == 2:
+            lambda_list_cg = {
+                key: var.X for key, var in master.lmbda.items()
+            }
+        else:
+            lambda_list_cg = {}
+
         master.Model.write(f"LPs/MP/SOLs/mp_node_{node.node_id}.sol")
         is_integral, lp_obj, most_frac_info = master.check_fractionality()
 
