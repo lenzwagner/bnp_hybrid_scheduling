@@ -1,11 +1,27 @@
 from CG import ColumnGeneration
 from branch_and_price import BranchAndPrice
+from logging_config import setup_logging, get_logger
 
+logger = get_logger(__name__)
 
 def main():
     """
     Main function to run Column Generation or Branch-and-Price algorithm.
     """
+    # ===========================
+    # LOGGING CONFIGURATION
+    # ===========================
+    # Options: 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
+    setup_logging(
+        log_level='INFO',
+        log_to_file=True,
+        log_dir='logs'
+    )
+
+    logger.info("=" * 100)
+    logger.info("STARTING BRANCH-AND-PRICE SOLVER")
+    logger.info("=" * 100)
+
     # ===========================
     # CONFIGURATION PARAMETERS
     # ===========================
@@ -43,6 +59,9 @@ def main():
     pricing_filtering = True  # Enable pricing filter
     therapist_agg = False  # Enable therapist aggregation
     learn_method = 'pwl'
+
+    # Logger info
+    logger.info(f"Configuration: seed={seed}, T={T}, D_focus={D_focus}, pttr={pttr}")
 
     # Branch-and-Price settings
     use_branch_and_price = True  # Set to False for standard CG
