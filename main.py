@@ -12,11 +12,11 @@ def main():
     # LOGGING CONFIGURATION
     # ===========================
     # Options: 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
-    setup_logging(
-        log_level='INFO',
-        log_to_file=True,
-        log_dir='logs'
-    )
+    setup_logging(log_level='INFO', log_to_file=True, log_dir='logs')
+    setup_logging(log_level='DEBUG', log_to_file=True, log_dir='logs')
+    setup_logging(log_level='ERROR', log_to_file=True, log_dir='logs')
+    setup_logging(log_level='WARNING', log_to_file=True, log_dir='logs')
+
 
     logger.info("=" * 100)
     logger.info("STARTING BRANCH-AND-PRICE SOLVER")
