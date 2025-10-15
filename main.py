@@ -177,7 +177,7 @@ def main():
         print(f"  - IP objective: {results['ip_obj']:.5f}")
         print(f"  - Compact model: {results['comp_obj']:.5f}")
         print(f"  - Gap: {results['gap']:.5%}")
-        print(f"  - Integral: {results['is_integral']}")
+        print(f"  - Integral?: {results['is_integral']}")
 
     print("=" * 100 + "\n")
 
