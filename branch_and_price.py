@@ -1500,6 +1500,8 @@ class BranchAndPrice:
         }
         master.Model.write(f"LPs/MP/SOLs/mp_node_{node.node_id}.sol")
         is_integral, lp_obj, most_frac_info = master.check_fractionality()
+        if node.node_id == 2:
+            sys.exit()
 
         if is_integral:
             self._print(f"\n✅ INTEGRAL SOLUTION FOUND AT NODE {node.node_id}!")
@@ -1656,16 +1658,7 @@ class BranchAndPrice:
         """
         Compute coefficients for branching constraints for an existing column.
 
-        For each branching constraint, determine what coefficient this column should have.
-
-        Args:
-            col_data: Column data dict with schedules_x, etc.
-            profile: Profile index
-            col_id: Column ID
-            branching_constraints: List of BranchingConstraint objects
-
-        Returns:
-            list: Coefficients for each branching constraint (in order they appear in model)
+        CRITICAL: A branching constraint on profile n only affects columns for profile n!
         """
         from branching_constraints import SPVariableBranching, MPVariableBranching
 
@@ -1674,12 +1667,14 @@ class BranchAndPrice:
 
         for constraint in branching_constraints:
             if isinstance(constraint, SPVariableBranching):
-                # Coefficient is 1 if chi^a_{njt} = 1, else 0
-                # Check if this column assigns profile to (agent, period)
                 n, j, t = constraint.profile, constraint.agent, constraint.period
 
-                # Look through schedules_x for this assignment
-                # Format: {(p, j, t, a): value}
+                # ✅ CRITICAL FIX: If this column is not for the branched profile, coef = 0
+                if profile != n:
+                    coefs.append(0)
+                    continue
+
+                # Only if profile == n: check if this column has assignment (j,t)
                 chi_value = 0
                 for (p, j_sched, t_sched, a), val in schedules_x.items():
                     if p == profile and j_sched == j and t_sched == t and a == col_id:
@@ -1691,7 +1686,6 @@ class BranchAndPrice:
 
             elif isinstance(constraint, MPVariableBranching):
                 # MP branching uses variable bounds, not linear constraints
-                # So coefficient is always 0 (or constraint doesn't exist yet)
                 coefs.append(0)
 
         return coefs
@@ -1842,6 +1836,8 @@ class BranchAndPrice:
         # Extract solution from subproblem
         schedules_x, x_list, _ = subproblem.getOptVals('x')
         schedules_los, los_list, _ = subproblem.getOptVals('LOS')
+        print(schedules_los, schedules_x)
+        sys.exit()
 
         # Create column data
         col_data = {
@@ -1866,7 +1862,8 @@ class BranchAndPrice:
 
         # Basic coefficients
         col_coefs = lambda_list + x_list
-        print(len(col_coefs))
+        print(len(x_list))
+        sys.exit()
 
         # ========================================================================
         # ADD SP-BRANCHING COEFFICIENTS IF NEEDED
@@ -1875,9 +1872,7 @@ class BranchAndPrice:
                                     if hasattr(c, 'master_constraint')
                                     and c.master_constraint is not None]
 
-        print('SP-Const', node.branching_constraints)
-
-        print(sp_branching_constraints)
+        print(col_data, profile, col_id, node.branching_constraints, sep="\n")
 
         if sp_branching_constraints:
             branching_coefs = self._compute_branching_coefficients_for_column(
@@ -1894,7 +1889,6 @@ class BranchAndPrice:
         expected_length = len(master.Model.getConstrs())
         actual_length = len(col_coefs)
         print(expected_length, actual_length, sep="\n")
-        sys.exit()
 
 
         if actual_length != expected_length:
@@ -1911,6 +1905,9 @@ class BranchAndPrice:
 
         self._print(f"        [Column] Added column ({profile}, {col_id}) "
                     f"with reduced cost {subproblem.Model.objVal:.6f}")
+
+        sys.exit()
+
 
     def branch_on_sp_variable(self, parent_node, branching_info):
         """
