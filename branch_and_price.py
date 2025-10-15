@@ -497,8 +497,9 @@ class BranchAndPrice:
 
         A node is fathomed if:
         1. Its LP solution is integral (we found an IP solution)
-        2. Its LP bound >= incumbent (no better solution possible)
-        3. Its LP is infeasible
+        2. Its LP is infeasible
+        3. Its LP bound >= incumbent (no better solution possible)
+
 
         Args:
             node: BnPNode to check
@@ -529,19 +530,19 @@ class BranchAndPrice:
 
             return True
 
-        # Check 2: Bound worse than incumbent
+        # Check 2: Infeasible
+        if node.lp_bound == float('inf'):
+            node.status = 'fathomed'
+            node.fathom_reason = 'infeasible'
+            self._print(f"   Node {node.node_id} fathomed: LP infeasible")
+            return True
+
+        # Check 3: Bound worse than incumbent
         if node.lp_bound >= self.incumbent - 1e-5:
             node.status = 'fathomed'
             node.fathom_reason = 'bound'
             self._print(f"   Node {node.node_id} fathomed by bound: "
                         f"LP={node.lp_bound:.6f} >= UB={self.incumbent:.6f}")
-            return True
-
-        # Check 3: Infeasible
-        if node.lp_bound == float('inf'):
-            node.status = 'fathomed'
-            node.fathom_reason = 'infeasible'
-            self._print(f"   Node {node.node_id} fathomed: LP infeasible")
             return True
 
         # Node cannot be fathomed
@@ -1444,8 +1445,8 @@ class BranchAndPrice:
             # Solve master as LP
             master.solRelModel()
             if master.Model.status != 2:  # GRB.OPTIMAL
-                self._print(f"    ⚠️  Master infeasible or unbounded at node {node.node_id}")
-                return float('inf'), False, None
+                self._print(f"    ⚠️  Master in CG-iterations infeasible or unbounded at node {node.node_id}")
+                return float('inf'), False, None, {}
 
             current_lp_obj = master.Model.objVal
             self._print(f"    [CG Iter {cg_iteration}] LP objective: {current_lp_obj:.6f}")
@@ -1496,6 +1497,9 @@ class BranchAndPrice:
         self._print(f"\n    [Node {node.node_id}] Final LP solve...")
         master.Model.write(f"LPs/MP/LPs/mp_final_{node.node_id}.lp")
         master.solRelModel()
+        if master.Model.status != 2:  # GRB.OPTIMAL
+            self._print(f"    ⚠️  Final Master infeasible or unbounded at node {node.node_id}")
+            return float('inf'), False, None, {}
 
         if master.Model.status == 2:
             lambda_list_cg = {
