@@ -230,8 +230,8 @@ class MasterProblem_d:
                         if p in self.P_Focus:
                             solution_key = (p, s)
                             active_keys.append(solution_key)
-                            if v.Obj > 1e-2:
-                                print(f'{v.VarName} = {v.X}, Obj-Coefficient: {round(v.Obj, 2)}')
+                            #if v.Obj > 1e-2:
+                                #print(f'{v.VarName} = {v.X}, Obj-Coefficient: {round(v.Obj, 2)}')
                     else:
                         if p in self.P_Join:
                             solution_key = (p, s)

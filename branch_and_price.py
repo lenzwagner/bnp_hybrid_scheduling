@@ -1866,6 +1866,7 @@ class BranchAndPrice:
 
         # Basic coefficients
         col_coefs = lambda_list + x_list
+        print(len(col_coefs))
 
         # ========================================================================
         # ADD SP-BRANCHING COEFFICIENTS IF NEEDED
@@ -1874,8 +1875,9 @@ class BranchAndPrice:
                                     if hasattr(c, 'master_constraint')
                                     and c.master_constraint is not None]
 
-        print('SP-COnst', node.branching_constraints)
-        sys.exit()
+        print('SP-Const', node.branching_constraints)
+
+        print(sp_branching_constraints)
 
         if sp_branching_constraints:
             branching_coefs = self._compute_branching_coefficients_for_column(
@@ -1891,6 +1893,9 @@ class BranchAndPrice:
         # Verify length
         expected_length = len(master.Model.getConstrs())
         actual_length = len(col_coefs)
+        print(expected_length, actual_length, sep="\n")
+        sys.exit()
+
 
         if actual_length != expected_length:
             self._print(f"        ❌ ERROR: Coefficient mismatch when adding new column!")
