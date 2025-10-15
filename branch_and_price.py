@@ -183,7 +183,7 @@ class BranchAndPrice:
             schedules_x = {}
             for (p_key, agent, period, old_iter), value in x_solution.items():
                 # Use col_id instead of old_iter
-                schedules_x[(p_key, agent, period, col_id)] = value
+                schedules_x[(p_key, agent, period, 0)] = value
 
             # Extract schedules_los
             schedules_los = {}
@@ -191,7 +191,7 @@ class BranchAndPrice:
                 los_solution = self.cg_solver.global_solutions['LOS'][(p, old_col_id)]
                 # Remap keys: (p, old_iteration) -> (p, col_id)
                 for (p_key, old_iter), value in los_solution.items():
-                    schedules_los[(p_key, col_id)] = value
+                    schedules_los[(p_key, 0)] = value
 
             # Create column data with CORRECT field names
             col_data = {
@@ -1413,7 +1413,8 @@ class BranchAndPrice:
         master = self._build_master_for_node(node)
         master.Model.update()
 
-        # Determine branching profile (from constraints)
+
+                # Determine branching profile (from constraints)
         branching_profile = self._get_branching_profile(node)
         if branching_profile:
             self._print(f"    [SP Saving] Branching profile: {branching_profile}")
@@ -1500,8 +1501,6 @@ class BranchAndPrice:
         }
         master.Model.write(f"LPs/MP/SOLs/mp_node_{node.node_id}.sol")
         is_integral, lp_obj, most_frac_info = master.check_fractionality()
-        if node.node_id == 2:
-            sys.exit()
 
         if is_integral:
             self._print(f"\n✅ INTEGRAL SOLUTION FOUND AT NODE {node.node_id}!")
@@ -1836,8 +1835,6 @@ class BranchAndPrice:
         # Extract solution from subproblem
         schedules_x, x_list, _ = subproblem.getOptVals('x')
         schedules_los, los_list, _ = subproblem.getOptVals('LOS')
-        print(schedules_los, schedules_x)
-        sys.exit()
 
         # Create column data
         col_data = {
@@ -1862,8 +1859,6 @@ class BranchAndPrice:
 
         # Basic coefficients
         col_coefs = lambda_list + x_list
-        print(len(x_list))
-        sys.exit()
 
         # ========================================================================
         # ADD SP-BRANCHING COEFFICIENTS IF NEEDED
@@ -1906,7 +1901,6 @@ class BranchAndPrice:
         self._print(f"        [Column] Added column ({profile}, {col_id}) "
                     f"with reduced cost {subproblem.Model.objVal:.6f}")
 
-        sys.exit()
 
 
     def branch_on_sp_variable(self, parent_node, branching_info):
