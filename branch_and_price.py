@@ -1605,6 +1605,10 @@ class BranchAndPrice:
                     branching_coefs = self._compute_branching_coefficients_for_column(
                         col_data, profile, col_id, node.branching_constraints
                     )
+                    if all(x == 0 for x in branching_coefs):
+                        self._print(f"      [Column with postive Chi {profile},{col_id}] Added {len(branching_coefs)} branching coefficients")
+                        sys.exit()
+
                     col_coefs = col_coefs + branching_coefs
                     self._print(
                         f"      [Column {profile},{col_id}] Added {len(branching_coefs)} branching coefficients")
