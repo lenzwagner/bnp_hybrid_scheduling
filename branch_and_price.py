@@ -1045,7 +1045,7 @@ class BranchAndPrice:
             tuple: (branching_type, branching_info) or (None, None) if no fractional var
         """
         if self.branching_strategy == 'mp':
-            return self._select_mp_branching_candidate(node, node_lambda)
+            return self._select_mp_branching_candidate(node)
         elif self.branching_strategy == 'sp':
             return self._select_sp_branching_candidate(node, node_lambda)
         else:
