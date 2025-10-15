@@ -25,10 +25,10 @@ def run_single_instance(seed):
     }
     T = 3
     D_focus = 5
-    dual_improvement_iter = 5
-    dual_stagnation_threshold = 1e-4
+    dual_improvement_iter = 20
+    dual_stagnation_threshold = 1e-5
     max_itr = 100
-    threshold = 1e-3
+    threshold = 1e-5
     pttr = 'medium'
     show_plots = False
     pricing_filtering = True
