@@ -1609,6 +1609,8 @@ class BranchAndPrice:
                 # Build coefficient vector: [lambda_coefs, x_coefs]
                 col_coefs = lambda_list + x_list
 
+                print('Node-Branching-Cosntraints', node.branching_constraints)
+
                 # In MP branching, only variable bounds are set, no new constraints.
                 if sp_branching_active:
                     branching_coefs = self._compute_branching_coefficients_for_column(
