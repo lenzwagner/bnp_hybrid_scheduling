@@ -283,7 +283,7 @@ class Subproblem:
         k_learn = self.app_data["k_learn"][0]
         theta_base = self.app_data["theta_base"][0]
 
-        print(f'Using Approx: {learn_type}')
+        #print(f'Using Approx: {learn_type}')
 
         self.App = self.Model.addVars([self.P], self.D, vtype=gu.GRB.CONTINUOUS, lb=0, ub=1, name="App")
 
@@ -322,7 +322,7 @@ class Subproblem:
         k = self.app_data["k_learn"][0]
         theta_base = self.app_data["theta_base"][0]
 
-        print(f'Using PWL: {learn_type}')
+        #print(f'Using PWL: {learn_type}')
 
         self.h_eff = self.Model.addVars([self.P], self.D, vtype=gu.GRB.CONTINUOUS, lb=0, ub=1, name="h_eff")
         self.App = self.Model.addVars([self.P], self.D, vtype=gu.GRB.CONTINUOUS, lb=0, ub=1, name="App")
@@ -364,7 +364,7 @@ class Subproblem:
         theta_base = self.app_data["theta_base"][0]
         infl_point = self.app_data["infl_point"][0]
 
-        print(f'Using Linearization: {learn_type}')
+        #print(f'Using Linearization: {learn_type}')
 
         self.z_pdr = self.Model.addVars(
             [self.P], self.D, list(range(0, self.S_Bound + 1)),

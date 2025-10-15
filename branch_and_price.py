@@ -4,22 +4,11 @@ from bnp_node import BnPNode
 import gurobipy as gu
 import copy
 import logging
-from tqdm import tqdm
 
 
 class BranchAndPrice:
     """
-    Branch-and-Price Algorithm - Minimal version for Phase 1.
-
-    This version creates only the root node and solves it via Column Generation.
-    This is functionally identical to the current CG implementation,
-    but in the B&P structure.
-
-    In later phases we will add:
-    - Branching logic
-    - Multiple nodes
-    - Fathoming
-    - Search strategy
+    Branch-and-Price Algorithm
 
     Attributes:
         nodes: Dictionary of all nodes {node_id -> BnPNode}
@@ -169,8 +158,8 @@ class BranchAndPrice:
             self.logger.info(f"   Incumbent: {self.incumbent:.6f}")
             self.logger.info(f"   CG will continue to convergence...\n")
         else:
-            self.logger.info(f"\n⚠️  Early incumbent computation unsuccessful")
-            self.logger.info(f"   CG will continue and we'll try again after convergence.\n")
+            self.logger.warning(f"\n⚠️  Early incumbent computation unsuccessful")
+            self.logger.warning(f"   CG will continue and we'll try again after convergence.\n")
 
         self.logger.info(f"{'─' * 100}\n")
 
@@ -300,10 +289,8 @@ class BranchAndPrice:
         # Solve with Column Generation
         self.cg_solver.solve_cg()
 
-
         # After CG converges: Check if we need to compute incumbent
         if not self.incumbent_computed_early:
-            # No early incumbent, or it failed → compute now from final RMP
             self.logger.info("\n" + "=" * 100)
             self.logger.info(" COMPUTING FINAL INCUMBENT ".center(100, "="))
             self.logger.info("=" * 100)
@@ -312,7 +299,6 @@ class BranchAndPrice:
 
             self._compute_final_incumbent()
         else:
-            # Early incumbent was computed → just note it
             self.logger.info("\n" + "=" * 100)
             self.logger.info(" USING EARLY INCUMBENT ".center(100, "="))
             self.logger.info("=" * 100)
@@ -321,12 +307,10 @@ class BranchAndPrice:
             self.logger.info("=" * 100 + "\n")
 
         # Final LP relaxation check
-        self.logger.info("\n[Root] Final LP relaxation check...")
+        self.logger.debug("\n[Root] Final LP relaxation check...")
         self.cg_solver.master.solRelModel()
 
-        lambda_list_root = {
-        key: var.X for key, var in self.cg_solver.master.lmbda.items()
-        }
+        lambda_list_root = {key: var.X for key, var in self.cg_solver.master.lmbda.items()}
 
         is_integral, lp_bound, most_frac_info = self.cg_solver.master.check_fractionality()
 
@@ -346,11 +330,10 @@ class BranchAndPrice:
             self.logger.info(f"\n✅ ROOT NODE IS INTEGRAL (LP)!")
         else:
             root_node.status = 'open'
-            self.logger.info(f"\n⚠️  ROOT NODE IS FRACTIONAL (LP)")
+            self.logger.warning(f"\n⚠️  ROOT NODE IS FRACTIONAL (LP)")
 
         self.logger.info(f"   LP Bound: {lp_bound:.6f}")
-        self.logger.info(
-            f"   Incumbent: {self.incumbent:.6f}" if self.incumbent < float('inf') else "   Incumbent: None")
+        self.logger.info(f"   Incumbent: {self.incumbent:.6f}" if self.incumbent < float('inf') else "   Incumbent: None")
 
         # Update global bounds
         self.best_lp_bound = lp_bound
@@ -385,7 +368,7 @@ class BranchAndPrice:
             self.logger.info(f"Gap:              {self.gap:.4%}")
             self.logger.info(f"{'=' * 100}\n")
         else:
-            self.logger.info(f"\n⚠️  Could not compute final incumbent")
+            self.logger.warning(f"\n⚠️  Could not compute final incumbent")
 
     def _solve_rmp_as_ip(self, master, context="IP Solve"):
         """
@@ -403,7 +386,6 @@ class BranchAndPrice:
         self.logger.info("=" * 100)
         self.logger.info(f"{context}: Solving RMP as Integer Program...".center(100))
         self.logger.info("=" * 100 + "\n")
-
         self.stats['ip_solves'] += 1
 
         try:
@@ -444,14 +426,14 @@ class BranchAndPrice:
                     success = True
                     result_obj = ip_obj
                 else:
-                    self.logger.info(f"\n⚠️  IP solution not better than current incumbent")
+                    self.logger.warning(f"\n⚠️  IP solution not better than current incumbent")
                     self.logger.info(f"   IP Objective:      {ip_obj:.6f}")
                     self.logger.info(f"   Current Incumbent: {self.incumbent:.6f}\n")
                     success = False
                     result_obj = ip_obj
 
             elif master.Model.status == gu.GRB.TIME_LIMIT:
-                self.logger.info(f"\n⚠️  IP solve hit time limit")
+                self.logger.warning(f"\n⚠️  IP solve hit time limit")
                 if master.Model.SolCount > 0:
                     ip_obj = master.Model.objVal
                     self.logger.info(f"   Best found solution: {ip_obj:.6f}")
@@ -475,7 +457,7 @@ class BranchAndPrice:
                     result_obj = float('inf')
 
             else:
-                self.logger.info(f"❌ IP solve unsuccessful (status={master.Model.status})")
+                self.logger.error(f"❌ IP solve unsuccessful (status={master.Model.status})")
                 success = False
                 result_obj = float('inf')
 
@@ -490,7 +472,7 @@ class BranchAndPrice:
             return success
 
         except Exception as e:
-            self.logger.info(f"❌ Error during {context}: {e}\n")
+            self.logger.error(f"❌ Error during {context}: {e}\n")
 
             # Restore original variable types
             for var in master.lmbda.values():
@@ -510,7 +492,6 @@ class BranchAndPrice:
         1. Its LP solution is integral (we found an IP solution)
         2. Its LP is infeasible
         3. Its LP bound >= incumbent (no better solution possible)
-
 
         Args:
             node: BnPNode to check
@@ -622,14 +603,14 @@ class BranchAndPrice:
                     success = True
                     result_obj = ip_obj
                 else:
-                    self.logger.info(f"\n⚠️  IP solution not better than current incumbent")
+                    self.logger.warning(f"\n⚠️  IP solution not better than current incumbent")
                     self.logger.info(f"   IP Objective:      {ip_obj:.6f}")
                     self.logger.info(f"   Current Incumbent: {self.incumbent:.6f}\n")
                     success = False
                     result_obj = ip_obj
 
             elif master.Model.status == gu.GRB.TIME_LIMIT:
-                self.logger.info(f"\n⚠️  IP solve hit time limit")
+                self.logger.warning(f"\n⚠️  IP solve hit time limit")
                 if master.Model.SolCount > 0:
                     ip_obj = master.Model.objVal
                     self.logger.info(f"   Best found solution: {ip_obj:.6f}")
@@ -653,7 +634,7 @@ class BranchAndPrice:
                     result_obj = float('inf')
 
             else:
-                self.logger.info(f"❌ IP solve unsuccessful (status={master.Model.status})")
+                self.logger.error(f"❌ IP solve unsuccessful (status={master.Model.status})")
                 success = False
                 result_obj = float('inf')
 
@@ -668,7 +649,7 @@ class BranchAndPrice:
             return success, result_obj
 
         except Exception as e:
-            self.logger.info(f"❌ Error during IP solve: {e}\n")
+            self.logger.error(f"❌ Error during IP solve: {e}\n")
 
             # Restore original variable types
             for var in master.lmbda.values():
@@ -750,7 +731,7 @@ class BranchAndPrice:
         print(branching_info, branching_type)
 
         if not branching_type:
-            self.logger.info(f"⚠️  Could not find branching candidate despite fractional solution!")
+            self.logger.warning(f"⚠️  Could not find branching candidate despite fractional solution!")
             self._finalize_and_print_results()
             return self._get_results_dict()
 
@@ -843,7 +824,7 @@ class BranchAndPrice:
                     current_node, max_cg_iterations=50
                 )
             except Exception as e:
-                self.logger.info(f"❌ Error solving node {current_node_id}: {e}")
+                self.logger.error(f"❌ Error solving node {current_node_id}: {e}")
                 current_node.status = 'fathomed'
                 current_node.fathom_reason = 'error'
                 self.stats['nodes_fathomed'] += 1
@@ -876,14 +857,14 @@ class BranchAndPrice:
             # ========================================
             # NODE NOT FATHOMED → BRANCH
             # ========================================
-            self.logger.info(f"\n⚠️  Node {current_node_id} requires branching (LP is fractional)")
+            self.logger.warning(f"\n⚠️  Node {current_node_id} requires branching (LP is fractional)")
 
             # Select branching candidate
             branching_type, branching_info = self.select_branching_candidate(current_node, node_lambdas)
 
             if not branching_type:
-                self.logger.info(f"❌ Could not find branching candidate at node {current_node_id}")
-                self.logger.info(f"   Marking as fathomed (should not happen!)")
+                self.logger.error(f"❌ Could not find branching candidate at node {current_node_id}")
+                self.logger.error(f"   Marking as fathomed (should not happen!)")
                 current_node.status = 'fathomed'
                 current_node.fathom_reason = 'no_branching_candidate'
                 self.stats['nodes_fathomed'] += 1
@@ -915,8 +896,8 @@ class BranchAndPrice:
         if not self.open_nodes:
             self.logger.info(f"✅ All nodes explored - Tree complete!")
         elif iteration >= max_nodes:
-            self.logger.info(f"⚠️  Node limit reached: {iteration} >= {max_nodes}")
-            self.logger.info(f"   {len(self.open_nodes)} nodes remain open")
+            self.logger.warning(f"⚠️  Node limit reached: {iteration} >= {max_nodes}")
+            self.logger.warning(f"   {len(self.open_nodes)} nodes remain open")
         else:
             self.logger.info(f"⏱️  Time limit reached")
             self.logger.info(f"   {len(self.open_nodes)} nodes remain open")
@@ -1023,7 +1004,7 @@ class BranchAndPrice:
                     else:
                         self.logger.info(f"[Callback] IP solution not better: {ip_obj:.6f} >= {self.incumbent:.6f}")
                 else:
-                    self.logger.info(f"[Callback] ⚠️  IP solve unsuccessful (status={cg_solver.master.Model.status})")
+                    self.logger.warning(f"[Callback] ⚠️  IP solve unsuccessful (status={cg_solver.master.Model.status})")
 
                 # Reset variables to continuous for remaining CG iterations
                 for var in cg_solver.master.lmbda.values():
@@ -1032,7 +1013,7 @@ class BranchAndPrice:
                 cg_solver.master.Model.Params.OutputFlag = 1  # Verbose again
 
             except Exception as e:
-                self.logger.info(f"[Callback] ❌ Error computing initial incumbent: {e}")
+                self.logger.error(f"[Callback] ❌ Error computing initial incumbent: {e}")
 
             self.logger.info(f"{'─' * 100}\n")
 
@@ -1077,7 +1058,7 @@ class BranchAndPrice:
         var_name = frac_info['var_name']
 
         if 'lmbda' not in var_name:
-            self.logger.info(f"⚠️  Unknown variable type: {var_name}")
+            self.logger.warning(f"⚠️  Unknown variable type: {var_name}")
             return None, None
 
         # Parse Lambda[n,a]
@@ -1115,7 +1096,7 @@ class BranchAndPrice:
         self.logger.info(f"  Lambda values size: {len(lambdas)}")
 
         if len(node.column_pool) != len(lambdas):
-            self.logger.info(f"  ⚠️  Lambda pool is not equal sized as the column pool")
+            self.logger.warning(f"  ⚠️  Lambda pool is not equal sized as the column pool")
 
         # Iterate over Lambda variables to get their current LP values
         print(lambdas)
@@ -1127,7 +1108,7 @@ class BranchAndPrice:
 
             # Get column data from node's column pool
             if (n, a) not in node.column_pool:
-                self.logger.info(f"  ⚠️  Lambda[{n},{a}] = {lambda_val:.4f} but column not in pool!")
+                self.logger.warning(f"  ⚠️  Lambda[{n},{a}] = {lambda_val:.4f} but column not in pool!")
                 continue
 
             col_data = node.column_pool[(n, a)]
@@ -1187,7 +1168,7 @@ class BranchAndPrice:
         print('Best Beta', best_candidate)
 
         if best_candidate is None:
-            self.logger.info(f"  ❌ No fractional beta found!")
+            self.logger.error(f"  ❌ No fractional beta found!")
 
             return None, None
 
@@ -1241,10 +1222,10 @@ class BranchAndPrice:
                 for key, val in sample_assignments:
                     self.logger.info(f"       {key}: {val}")
         else:
-            self.logger.info(f"\n  ❌ ERROR: Column ({n},{a}) NOT found in parent's column pool!")
-            self.logger.info(
+            self.logger.error(f"\n  ❌ ERROR: Column ({n},{a}) NOT found in parent's column pool!")
+            self.logger.error(
                 f"     Available columns for profile {n}: {[col_id for (p, col_id) in parent_node.column_pool.keys() if p == n]}")
-            self.logger.info(f"     No-good cut cannot be added!")
+            self.logger.error(f"     No-good cut cannot be added!")
 
         # -------------------------
         # LEFT CHILD
@@ -1256,10 +1237,6 @@ class BranchAndPrice:
             depth=parent_node.depth + 1,
             path=parent_node.path + 'l'
         )
-
-        # if left_child.depth == 3:
-        # self.logger.info(f"\n🛑 DEBUG STOPPER: Reached depth {left_child.depth}")
-        # self.logger.info(f"Path: {left_child.path}")
 
         # Create left branching constraint
         from branching_constraints import MPVariableBranching
@@ -1439,85 +1416,79 @@ class BranchAndPrice:
         node_start_time = time.time()
         NODE_TIME_LIMIT = 300
 
-        self.logger.info(f"\n    [Debug] Constraints BEFORE CG loop:")
+        self.logger.debug(f"\n    [Debug] Constraints BEFORE CG loop:")
         for c in master.Model.getConstrs():
             if 'sp_branch' in c.ConstrName:
-                self.logger.info(f"      {c.ConstrName}: {c.Sense} {c.RHS}")
+                self.logger.debug(f"      {c.ConstrName}: {c.Sense} {c.RHS}")
 
-        with tqdm(total=max_cg_iterations, desc=f"Node {node.node_id} CG") as pbar:
-            while cg_iteration < max_cg_iterations:
-                if time.time() - node_start_time > NODE_TIME_LIMIT:
-                    self.logger.info(f"⏱️  Node {node.node_id} time limit reached")
-                    break
+        while cg_iteration < max_cg_iterations:
+            if time.time() - node_start_time > NODE_TIME_LIMIT:
+                self.logger.debug(f"⏱️  Node {node.node_id} time limit reached")
+                break
 
-                cg_iteration += 1
+            cg_iteration += 1
 
-                self.logger.info(f"    [CG Iter {cg_iteration}] Solving master LP...")
+            self.logger.info(f"    [CG Iter {cg_iteration}] Solving master LP...")
 
-                # Solve master as LP
-                master.solRelModel()
-                if master.Model.status != 2:  # GRB.OPTIMAL
-                    self.logger.info(f"    ⚠️  Master in CG-iterations infeasible or unbounded at node {node.node_id}")
-                    return float('inf'), False, None, {}
+            # Solve master as LP
+            master.solRelModel()
+            if master.Model.status != 2:  # GRB.OPTIMAL
+                self.logger.warning(f"    ⚠️  Master in CG-iterations infeasible or unbounded at node {node.node_id}")
+                return float('inf'), False, None, {}
 
-                current_lp_obj = master.Model.objVal
-                self.logger.info(f"    [CG Iter {cg_iteration}] LP objective: {current_lp_obj:.6f}")
+            current_lp_obj = master.Model.objVal
+            self.logger.info(f"    [CG Iter {cg_iteration}] LP objective: {current_lp_obj:.6f}")
 
-                # Get duals from master
-                duals_pi, duals_gamma = master.getDuals()
-                self.logger.info(self.branching_strategy)
+            # Get duals from master
+            duals_pi, duals_gamma = master.getDuals()
+            self.logger.info(self.branching_strategy)
 
-                # Get branching constraint duals if SP-branching is used
-                branching_duals = {}
-                if self.branching_strategy == 'sp':
-                    branching_duals = self._get_branching_constraint_duals(master, node)
+            # Get branching constraint duals if SP-branching is used
+            branching_duals = {}
+            if self.branching_strategy == 'sp':
+                branching_duals = self._get_branching_constraint_duals(master, node)
 
-                # 3. Solve subproblems for all profiles
-                new_columns_found = False
-                columns_added_this_iter = 0
+            # 3. Solve subproblems for all profiles
+            new_columns_found = False
+            columns_added_this_iter = 0
 
-                for profile in self.cg_solver.P_Join:
-                    # Build and solve subproblem with branching constraints
-                    sp = self._build_subproblem_for_node(
-                        profile, node, duals_pi, duals_gamma, branching_duals
-                    )
-                    # SAVE FIRST SP FOR BRANCHING PROFILE
-                    if profile == branching_profile:
-                        sp_filename = f"LPs/SPs/pricing/sp_node_{node.node_id}_profile_{profile}_iter{cg_iteration}.lp"
-                        sp.Model.write(sp_filename)
-                        self.logger.info(f"    ✅ [SP Saved] First pricing SP for branching profile {profile}: {sp_filename}")
-                    sp.solModel()
+            for profile in self.cg_solver.P_Join:
+                # Build and solve subproblem with branching constraints
+                sp = self._build_subproblem_for_node(
+                    profile, node, duals_pi, duals_gamma, branching_duals
+                )
+                # SAVE FIRST SP FOR BRANCHING PROFILE
+                if profile == branching_profile:
+                    sp_filename = f"LPs/SPs/pricing/sp_node_{node.node_id}_profile_{profile}_iter{cg_iteration}.lp"
+                    sp.Model.write(sp_filename)
+                    self.logger.info(f"    ✅ [SP Saved] First pricing SP for branching profile {profile}: {sp_filename}")
+                sp.solModel()
 
-                    # Check reduced cost
-                    if sp.Model.status == 2 and sp.Model.objVal < -threshold:
-                        self.logger.info(f'Red. cost for profile {profile} : {sp.Model.objVal}')
+                # Check reduced cost
+                if sp.Model.status == 2 and sp.Model.objVal < -threshold:
+                    self.logger.info(f'Red. cost for profile {profile} : {sp.Model.objVal}')
 
-                        # Add column to node and master
-                        self._add_column_from_subproblem(sp, profile, node, master)
-                        new_columns_found = True
-                        columns_added_this_iter += 1
-                        master.Model.update()
+                    # Add column to node and master
+                    self._add_column_from_subproblem(sp, profile, node, master)
+                    new_columns_found = True
+                    columns_added_this_iter += 1
+                    master.Model.update()
 
-                self.logger.info(f"    [CG Iter {cg_iteration}] Added {columns_added_this_iter} new columns")
+            self.logger.info(f"    [CG Iter {cg_iteration}] Added {columns_added_this_iter} new columns")
 
-                # Check convergence
-                if not new_columns_found:
-                    self.logger.info(f"    [CG] Converged after {cg_iteration} iterations - no improving columns found")
-                    break
-                master.Model.update()
+            # Check convergence
+            if not new_columns_found:
+                self.logger.info(f"    [CG] Converged after {cg_iteration} iterations - no improving columns found")
+                break
+            master.Model.update()
 
-            pbar.set_postfix({
-                'LP': f'{current_lp_obj:.2f}',
-                'Cols': new_cols_added_count
-            })
-            pbar.update(1)
 
         # 4. Final LP solve and integrality check
         self.logger.info(f"\n    [Node {node.node_id}] Final LP solve...")
         master.Model.write(f"LPs/MP/LPs/mp_final_{node.node_id}.lp")
         master.solRelModel()
         if master.Model.status != 2:  # GRB.OPTIMAL
-            self.logger.info(f"    ⚠️  Final Master infeasible or unbounded at node {node.node_id}")
+            self.logger.warning(f"    ⚠️  Final Master infeasible or unbounded at node {node.node_id}")
             return float('inf'), False, None, {}
 
         if master.Model.status == 2:
@@ -1592,7 +1563,7 @@ class BranchAndPrice:
                     # Debug: Show first assignment
                     if initial_cols_added == 1:
                         sample_key = list(schedules_x.keys())[0]
-                        self.logger.info(f"      Sample initial column: {sample_key} = {schedules_x[sample_key]}")
+                        self.logger.debug(f"      Sample initial column: {sample_key} = {schedules_x[sample_key]}")
 
         self.logger.info(f"    [Master] Added {initial_cols_added} initial columns to all_schedules")
 
@@ -1610,7 +1581,7 @@ class BranchAndPrice:
                 schedules_los = col_data.get('schedules_los', {})
 
                 if not schedules_x:
-                    self.logger.info(f"      ⚠️ WARNING: Column ({profile},{col_id}) has empty schedules_x!")
+                    self.logger.warning(f"      ⚠️ WARNING: Column ({profile},{col_id}) has empty schedules_x!")
                     continue
 
                 master.addSchedule(schedules_x)
@@ -1765,9 +1736,9 @@ class BranchAndPrice:
 
                 # Validate dual sign (according to constraint direction)
                 if constraint.dir == 'left' and dual_val > 1e-6:
-                    self.logger.info(f"      ⚠️  WARNING: Left branch (≤) has positive dual: {dual_val:.6f}")
+                    self.logger.warning(f"      ⚠️  WARNING: Left branch (≤) has positive dual: {dual_val:.6f}")
                 if constraint.dir == 'right' and dual_val < -1e-6:
-                    self.logger.info(f"      ⚠️  WARNING: Right branch (≥) has negative dual: {dual_val:.6f}")
+                    self.logger.warning(f"      ⚠️  WARNING: Right branch (≥) has negative dual: {dual_val:.6f}")
 
                 # Store with unique key (profile, agent, period, level)
                 key = (constraint.profile, constraint.agent, constraint.period, constraint.level)
@@ -1778,7 +1749,7 @@ class BranchAndPrice:
                             f"→ π={dual_val:+.6f}")
 
             except Exception as e:
-                self.logger.info(f"      ⚠️  Could not extract dual from constraint: {e}")
+                self.logger.warning(f"      ⚠️  Could not extract dual from constraint: {e}")
 
         self.logger.info(f"      Found {sp_constraints_found} SP branching duals\n")
         return branching_duals
@@ -1919,8 +1890,8 @@ class BranchAndPrice:
 
 
         if actual_length != expected_length:
-            self.logger.info(f"        ❌ ERROR: Coefficient mismatch when adding new column!")
-            self.logger.info(f"           Expected: {expected_length}, Got: {actual_length}")
+            self.logger.error(f"        ❌ ERROR: Coefficient mismatch when adding new column!")
+            self.logger.error(f"           Expected: {expected_length}, Got: {actual_length}")
             raise ValueError("Coefficient vector length mismatch!")
 
         # Add variable to master
@@ -2161,7 +2132,7 @@ class BranchAndPrice:
         elif self.gap < 1e-4:
             self.logger.info(f"✅ Status: OPTIMAL (gap < 0.01%)")
         else:
-            self.logger.info(f"⚠️  Status: INCOMPLETE (time/node limit reached)")
+            self.logger.warning(f"⚠️  Status: INCOMPLETE (time/node limit reached)")
 
         # Bounds and gap
         self.logger.info("Objective Bounds:")
@@ -2378,7 +2349,7 @@ class BranchAndPrice:
 
                     improved = True
                 else:
-                    self.logger.info(f"  ⚠️  IP solution not improving: {ip_obj:.6f} >= {self.incumbent:.6f}")
+                    self.logger.warning(f"  ⚠️  IP solution not improving: {ip_obj:.6f} >= {self.incumbent:.6f}")
 
             elif master.Model.status == gu.GRB.TIME_LIMIT:
                 if master.Model.SolCount > 0:
@@ -2403,12 +2374,12 @@ class BranchAndPrice:
 
                         improved = True
                 else:
-                    self.logger.info(f"  ⚠️  Time limit, no feasible solution found")
+                    self.logger.warning(f"  ⚠️  Time limit, no feasible solution found")
             else:
-                self.logger.info(f"  ❌ IP solve unsuccessful (status={master.Model.status})")
+                self.logger.error(f"  ❌ IP solve unsuccessful (status={master.Model.status})")
 
         except Exception as e:
-            self.logger.info(f"  ❌ Error during IP heuristic: {e}")
+            self.logger.error(f"  ❌ Error during IP heuristic: {e}")
             improved = False
 
         finally:
