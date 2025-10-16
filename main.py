@@ -12,7 +12,7 @@ def main():
     # LOGGING CONFIGURATION
     # ===========================
     # Options: 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
-    setup_logging(log_level='INFO', log_to_file=True, log_dir='logs')
+    setup_logging(log_level='INFO', log_to_file=True, log_dir='logs/info')
     setup_logging(log_level='DEBUG', log_to_file=True, log_dir='logs')
     setup_logging(log_level='ERROR', log_to_file=True, log_dir='logs')
     setup_logging(log_level='WARNING', log_to_file=True, log_dir='logs')
@@ -139,6 +139,37 @@ def main():
                                     ip_heuristic_frequency=10,
                                     early_incumbent_iteration=1)
         results = bnp_solver.solve(time_limit=3600, max_nodes=1000)
+
+        # Extract optimal schedules
+        if results['incumbent'] is not None:
+            print("\n" + "=" * 100)
+            print(" EXTRACTING OPTIMAL SCHEDULES ".center(100, "="))
+            print("=" * 100)
+
+            optimal_schedules = bnp_solver.extract_optimal_schedules()
+
+            # Print example schedules
+            if optimal_schedules:
+                p_focus_patients = {
+                    patient_id: info
+                    for patient_id, info in optimal_schedules['patient_schedules'].items()
+                    if info['profile'] in cg_solver.P_F
+                }
+
+                # Print first 3 patient schedules as examples
+                patient_ids = list(p_focus_patients.keys())[:3]
+                for patient_id in patient_ids:
+                    bnp_solver.print_detailed_schedule(
+                        patient_id,
+                        p_focus_patients[patient_id]
+                    )
+
+            # Export to CSV
+            bnp_solver.export_schedules_to_csv('results/optimal_schedules.csv')
+
+            print("\n" + "=" * 100)
+            print(" SCHEDULE EXTRACTION COMPLETE ".center(100, "="))
+            print("=" * 100)
 
         # Print CG statistics (from root node)
         print("\n" + "=" * 100)

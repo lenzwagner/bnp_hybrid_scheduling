@@ -102,6 +102,7 @@ class BranchAndPrice:
 
         # Initialize LP-folder
         import os
+        os.makedirs("results", exist_ok=True)
         os.makedirs("LPs/MP/LPs", exist_ok=True)
         os.makedirs("LPs/MP/SOLs", exist_ok=True)
         os.makedirs("LPs/SPs/pricing", exist_ok=True)
@@ -537,6 +538,11 @@ class BranchAndPrice:
                         f"LP={node.lp_bound:.6f} >= UB={self.incumbent:.6f}")
             return True
 
+        # Check 4:
+        if node.status == 'fathomed':
+            self._check_and_fathom_parents(node.node_id)
+            return True
+
         # Node cannot be fathomed
         return False
 
@@ -809,12 +815,12 @@ class BranchAndPrice:
             self.logger.info(f"   🔎 Open nodes: {self.open_nodes}")
             current_node = self.nodes[current_node_id]
 
-            self.logger.info(f"\n{'╔' + '═' * 98 + '╗'}")
-            self.logger.info(f"║{f' PROCESSING NODE {current_node_id} (Iteration {iteration}) ':^98}║")
-            self.logger.info(f"║{f' Path: {current_node.path}, Depth: {current_node.depth} ':^98}║")
-            self.logger.info(f" Open Nodes: {len(self.open_nodes)}, Explored: {self.stats['nodes_explored']} ")
-            self.logger.info(f"║{f' Incumbent: {self.incumbent:.4f}, Best LB: {self.best_lp_bound:.4f} ':^98}║")
-            self.logger.info(f"{'╚' + '═' * 98 + '╝'}\n")
+            print(f"\n{'╔' + '═' * 98 + '╗'}")
+            print(f"║{f' PROCESSING NODE {current_node_id} (Iteration {iteration}) ':^98}║")
+            print(f"║{f' Path: {current_node.path}, Depth: {current_node.depth} ':^98}║")
+            print(f" Open Nodes: {len(self.open_nodes)}, Explored: {self.stats['nodes_explored']} ")
+            print(f"║{f' Incumbent: {self.incumbent:.4f}, Best LB: {self.best_lp_bound:.4f} ':^98}║")
+            print(f"{'╚' + '═' * 98 + '╝'}\n")
 
             # ========================================
             # SOLVE NODE WITH COLUMN GENERATION
@@ -2179,15 +2185,26 @@ class BranchAndPrice:
             self.logger.info("Search Tree Structure:")
             self.logger.info(f"  Max Depth Reached: {max(node.depth for node in self.nodes.values())}")
 
-            # Count nodes by status
+            # Count nodes by status and fathom reason
             status_counts = {}
+            fathom_reasons = {}
+
             for node in self.nodes.values():
                 status_counts[node.status] = status_counts.get(node.status, 0) + 1
 
-            for status, count in sorted(status_counts.items()):
-                self.logger.info(f"  {status.capitalize():15}: {count}")
+                if node.fathom_reason:
+                    fathom_reasons[node.fathom_reason] = fathom_reasons.get(node.fathom_reason, 0) + 1
 
-        # --- NEW: Detailed Processing Log ---
+            for status, count in sorted(status_counts.items()):
+                self.logger.info(f"  {status.capitalize():20}: {count}")
+
+            if fathom_reasons:
+                self.logger.info(f"\n  Fathoming Breakdown:")
+                for reason, count in sorted(fathom_reasons.items()):
+                    reason_display = reason.replace('_', ' ').title()
+                    self.logger.info(f"    {reason_display:25}: {count}")
+
+        # Detailed Processing Log
         if self.stats['node_processing_order']:
             self._print_always("-" * 100)
             self._print_always(" NODE PROCESSING LOG ".center(100, "-"))
@@ -2454,3 +2471,309 @@ class BranchAndPrice:
             return last_constraint.profile
 
         return None
+
+    # In branch_and_price.py
+
+    def _check_and_fathom_parents(self, node_id):
+        """
+        Check if parent nodes can be fathomed after a child is fathomed.
+
+        A parent can be fathomed if ALL its children are fathomed.
+        This recursively propagates up the tree.
+
+        Args:
+            node_id: ID of the node that was just fathomed
+        """
+        node = self.nodes[node_id]
+
+        if node.parent_id is None:
+            return  # Root node has no parent
+
+        parent = self.nodes[node.parent_id]
+
+        # Only check if parent is 'branched' (not already fathomed)
+        if parent.status != 'branched':
+            return
+
+        # Find all children of the parent
+        children = [n for n in self.nodes.values() if n.parent_id == parent.node_id]
+
+        # Check if ALL children are fathomed
+        all_children_fathomed = all(child.status == 'fathomed' for child in children)
+
+        if all_children_fathomed:
+            # Determine best bound among children for fathom reason
+            child_bounds = [child.lp_bound for child in children]
+            best_child_bound = min(child_bounds) if child_bounds else float('inf')
+
+            # Fathom parent
+            parent.status = 'fathomed'
+            parent.fathom_reason = 'all_children_fathomed'
+            parent.lp_bound = best_child_bound  # Update with best child bound
+
+            self.logger.info(f"\n  ✅ Parent Node {parent.node_id} fathomed: All children fathomed")
+            self.logger.info(f"     Children: {[c.node_id for c in children]}")
+            self.logger.info(f"     Best child bound: {best_child_bound:.6f}")
+
+            # Recursively check grandparent
+            self._check_and_fathom_parents(parent.node_id)
+
+    # In branch_and_price.py
+
+    def extract_optimal_schedules(self, include_all_patients=True):
+        """
+        Extract optimal schedules from the incumbent solution.
+
+        Disaggregates profile-level solution to individual patient schedules.
+        Based on Paper: "ex-post disaggregation step reconstructs recipient-level
+        assignments from the profile-based solution"
+
+        Args:
+            include_all_patients: If True, include P_Pre and P_Post patients
+
+        Returns:
+            dict: {
+                'patient_schedules': {patient_id: schedule_info},
+                'objective_value': float,
+                'total_los': int,
+                'utilization': dict
+            }
+        """
+        if self.incumbent_solution is None:
+            self.logger.error("No incumbent solution available!")
+            return None
+
+        self.logger.info("\n" + "=" * 100)
+        self.logger.info(" EXTRACTING OPTIMAL SCHEDULES ".center(100, "="))
+        self.logger.info("=" * 100)
+
+        # Find the node with the incumbent solution
+        incumbent_node = self._find_incumbent_node()
+        if incumbent_node == 0:
+            incumbent_node = self._get_best_integral_node()
+
+        node = self.nodes[incumbent_node]
+
+        self.logger.info(f"\nExtracting from Node {incumbent_node}")
+        self.logger.info(f"  Objective Value: {self.incumbent:.6f}")
+        self.logger.info(f"  Status: {node.status}")
+
+        # Get Lambda values from incumbent
+        master = self.cg_solver.master
+        lambda_assignments = {}
+
+        for (p, a), var in master.lmbda.items():
+            if var.X > 0.5:  # Integer solution
+                lambda_assignments[(p, a)] = int(round(var.X))
+
+        self.logger.info(f"\nActive columns: {len(lambda_assignments)}")
+
+        # Disaggregate to individual patients
+        patient_schedules = {}
+        profile_counters = {}
+
+        for (profile, col_id), count in sorted(lambda_assignments.items()):
+            self.logger.info(f"\n  Profile {profile}, Column {col_id}: {count} patients")
+
+            # Get schedule from column pool
+            if (profile, col_id) not in node.column_pool:
+                self.logger.warning(f"    ⚠️  Column ({profile},{col_id}) not in pool!")
+                continue
+
+            col_data = node.column_pool[(profile, col_id)]
+
+            # Extract schedule information
+            schedules_x = col_data.get('schedules_x', {})
+            schedules_los = col_data.get('schedules_los', {})
+
+            # Get LOS
+            los_value = list(schedules_los.values())[0] if schedules_los else 0
+
+            # Disaggregate: Assign this schedule to 'count' patients
+            if profile not in profile_counters:
+                profile_counters[profile] = 0
+
+            for i in range(count):
+                # Create unique patient ID
+                patient_id = f"P{profile}_{profile_counters[profile]}"
+                profile_counters[profile] += 1
+
+                # Extract therapist assignment
+                assigned_therapist = None
+                for (p, j, t, a), val in schedules_x.items():
+                    if p == profile and val > 0.5:
+                        assigned_therapist = j
+                        break
+
+                # Extract daily schedule
+                daily_schedule = {}
+                for (p, j, t, a), val in schedules_x.items():
+                    if p == profile and val > 0.5:
+                        if t not in daily_schedule:
+                            daily_schedule[t] = []
+                        daily_schedule[t].append({
+                            'therapist': j,
+                            'session': 'human'
+                        })
+
+                # Check for AI sessions
+                if 'y_data' in col_data:
+                    y_data = col_data['y_data']
+                    for (p, d, _), val in y_data.items():
+                        if p == profile and val > 0.5:
+                            if d not in daily_schedule:
+                                daily_schedule[d] = []
+                            daily_schedule[d].append({
+                                'therapist': None,
+                                'session': 'AI'
+                            })
+
+                # Store patient schedule
+                patient_schedules[patient_id] = {
+                    'profile': profile,
+                    'column': col_id,
+                    'therapist': assigned_therapist,
+                    'los': los_value,
+                    'entry_day': self.cg_solver.Entry_agg[profile],
+                    'required_sessions': self.cg_solver.Req_agg[profile],
+                    'daily_schedule': daily_schedule,
+                    'total_sessions': sum(len(sessions) for sessions in daily_schedule.values())
+                }
+
+                self.logger.info(f"    Patient {patient_id}: Therapist {assigned_therapist}, "
+                                 f"LOS={los_value}, Sessions={patient_schedules[patient_id]['total_sessions']}")
+
+        # Calculate statistics
+        total_los = sum(s['los'] for s in patient_schedules.values())
+        avg_los = total_los / len(patient_schedules) if patient_schedules else 0
+
+        # Therapist utilization
+        therapist_workload = {}
+        for patient_info in patient_schedules.values():
+            for day, sessions in patient_info['daily_schedule'].items():
+                for session in sessions:
+                    if session['therapist'] is not None:
+                        t = session['therapist']
+                        if t not in therapist_workload:
+                            therapist_workload[t] = {}
+                        if day not in therapist_workload[t]:
+                            therapist_workload[t][day] = 0
+                        therapist_workload[t][day] += 1
+
+        # Summary
+        self.logger.info("\n" + "=" * 100)
+        self.logger.info(" OPTIMAL SOLUTION SUMMARY ".center(100, "="))
+        self.logger.info("=" * 100)
+        self.logger.info(f"\nPatients:")
+        self.logger.info(f"  Total Patients: {len(patient_schedules)}")
+        self.logger.info(f"  Total LOS: {total_los}")
+        self.logger.info(f"  Average LOS: {avg_los:.2f}")
+
+        self.logger.info(f"\nProfiles:")
+        for profile, count in sorted(profile_counters.items()):
+            self.logger.info(f"  Profile {profile}: {count} patients")
+
+        self.logger.info(f"\nTherapist Utilization:")
+        for t in sorted(therapist_workload.keys()):
+            total_sessions = sum(therapist_workload[t].values())
+            days_worked = len(therapist_workload[t])
+            avg_daily = total_sessions / days_worked if days_worked > 0 else 0
+            self.logger.info(f"  Therapist {t}: {total_sessions} sessions over {days_worked} days "
+                             f"(avg {avg_daily:.1f}/day)")
+
+        self.logger.info("=" * 100)
+
+        return {
+            'patient_schedules': patient_schedules,
+            'objective_value': self.incumbent,
+            'total_los': total_los,
+            'avg_los': avg_los,
+            'therapist_utilization': therapist_workload,
+            'profile_distribution': profile_counters
+        }
+
+    def _get_best_integral_node(self):
+        """
+        Find the best integral node (lowest bound among integral nodes).
+
+        Returns:
+            int: Node ID of best integral node
+        """
+        integral_nodes = [
+            (node.lp_bound, node.node_id)
+            for node in self.nodes.values()
+            if node.is_integral
+        ]
+
+        if not integral_nodes:
+            return 0  # Return root if no integral node found
+
+        # Return node with lowest bound
+        return min(integral_nodes)[1]
+
+    def print_detailed_schedule(self, patient_id, schedule_info):
+        """
+        Print a detailed schedule for a specific patient.
+
+        Args:
+            patient_id: Patient identifier
+            schedule_info: Schedule information from extract_optimal_schedules
+        """
+        print("\n" + "=" * 80)
+        print(f" SCHEDULE FOR {patient_id} ".center(80, "="))
+        print("=" * 80)
+
+        print(f"\nPatient Information:")
+        print(f"  Profile: {schedule_info['profile']}")
+        print(f"  Assigned Therapist: {schedule_info['therapist']}")
+        print(f"  Entry Day: {schedule_info['entry_day']}")
+        print(f"  Length of Stay: {schedule_info['los']} days")
+        print(f"  Required Sessions: {schedule_info['required_sessions']}")
+        print(f"  Total Sessions: {schedule_info['total_sessions']}")
+
+        print(f"\nDaily Schedule:")
+        print(f"  {'Day':<8} {'Therapist':<12} {'Type':<10}")
+        print("  " + "-" * 40)
+
+        for day in sorted(schedule_info['daily_schedule'].keys()):
+            sessions = schedule_info['daily_schedule'][day]
+            for session in sessions:
+                therapist = session['therapist'] if session['therapist'] else "N/A"
+                session_type = session['session']
+                print(f"  {day:<8} {therapist:<12} {session_type:<10}")
+
+        print("=" * 80)
+
+    def export_schedules_to_csv(self, filename='optimal_schedules.csv'):
+        """
+        Export optimal schedules to CSV file.
+
+        Args:
+            filename: Output filename
+        """
+        import pandas as pd
+
+        schedules = self.extract_optimal_schedules()
+        if not schedules:
+            return
+
+        # Create rows for CSV
+        rows = []
+        for patient_id, info in schedules['patient_schedules'].items():
+            for day, sessions in info['daily_schedule'].items():
+                for session in sessions:
+                    rows.append({
+                        'patient_id': patient_id,
+                        'profile': info['profile'],
+                        'day': day,
+                        'therapist': session['therapist'] if session['therapist'] else 'AI',
+                        'session_type': session['session'],
+                        'los': info['los'],
+                        'entry_day': info['entry_day']
+                    })
+
+        df = pd.DataFrame(rows)
+        df.to_csv(filename, index=False)
+
+        self.logger.info(f"\n✅ Schedules exported to {filename}")
+        self.logger.info(f"   Total rows: {len(df)}")
