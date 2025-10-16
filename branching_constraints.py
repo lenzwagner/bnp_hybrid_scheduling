@@ -53,10 +53,6 @@ class SPVariableBranching(BranchingConstraint):
     """
     Branching on Subproblem Variable x_{njt}
 
-    Based on Paper Section 3.2.4, Equations (branch:sub2) and (branch:sub3):
-    - Left branch:  x_{njt} = 0  (no assignment of profile n to agent j in period t)
-    - Right branch: x_{njt} = 1  (force assignment of profile n to agent j in period t)
-
     Master Problem Impact (Equation branch:sub2):
     - Left:  sum_{a: chi^a_{njt}=1} Lambda_{na} <= floor(beta)
     - Right: sum_{a: chi^a_{njt}=1} Lambda_{na} >= ceil(beta)
@@ -69,25 +65,24 @@ class SPVariableBranching(BranchingConstraint):
         profile: Profile index n
         agent: Agent index j (or therapist type if aggregated)
         period: Period index t
-        value: 0 for left branch, 1 for right branch
         level: Level in search tree (for dual variable tracking)
         dual_left: Dual variable for left constraint (delta^L_{nl})
         dual_right: Dual variable for right constraint (delta^R_{nl})
+        master_constraint: Reference to restored cosntraint
     """
 
-    def __init__(self, profile_n, agent_j, period_t, value, dir, level,
+    def __init__(self, profile_n, agent_j, period_t, dir, level,
                  floor_val, ceil_val):
         self.profile = profile_n
         self.agent = agent_j
         self.period = period_t
-        self.value = value
         self.level = level
         self.dir = dir
         self.floor = floor_val
         self.ceil = ceil_val
         self.dual_left = 0.0
         self.dual_right = 0.0
-        self.master_constraint = None  # Store reference to created constraint
+        self.master_constraint = None
 
     def apply_to_master(self, master, node):
         """Add constraint to master and set coefficients for initial columns."""
@@ -124,7 +119,7 @@ class SPVariableBranching(BranchingConstraint):
 
         master.Model.update()
 
-        # ✅ Set coefficients for EXISTING initial column (col_id=1)
+        # Set coefficients for EXISTING initial column (col_id=1)
         if (n, 1) in master.lmbda:
             if 1 in relevant_columns:
                 master.Model.chgCoeff(self.master_constraint, master.lmbda[n, 1], 1)
@@ -140,13 +135,12 @@ class SPVariableBranching(BranchingConstraint):
         - Right: x_{njt} = 1
         """
         if subproblem.P != self.profile:
-            return  # Not relevant for this subproblem
+            return
 
         # Key format in subproblem: x[p, j, t, iteration]
         var_key = (self.profile, self.agent, self.period, subproblem.itr)
 
         if var_key in subproblem.x:
-            # Fix variable to branching value
             if self.dir == 'left':
                 subproblem.x[var_key].LB = 0
                 subproblem.x[var_key].UB = 0
@@ -177,10 +171,6 @@ class MPVariableBranching(BranchingConstraint):
     """
     Branching on Master Problem Variable Lambda_{na}
 
-    Based on Paper Section 3.2.4, Equation (branch_mp1):
-    - Left branch:  Lambda_{na} <= floor(Lambda_hat)
-    - Right branch: Lambda_{na} >= ceil(Lambda_hat)
-
     Master Problem Impact:
     - Simply set variable bounds on Lambda_{na}
 
@@ -199,9 +189,9 @@ class MPVariableBranching(BranchingConstraint):
     def __init__(self, profile_n, column_a, bound, direction, original_schedule=None):
         self.profile = profile_n
         self.column = column_a
-        self.bound = bound  # floor or ceil of Lambda
-        self.direction = direction  # 'left' or 'right'
-        self.original_schedule = original_schedule  # For no-good cut
+        self.bound = bound
+        self.direction = direction
+        self.original_schedule = original_schedule
 
     def apply_to_master(self, master, node):
         """
@@ -216,7 +206,7 @@ class MPVariableBranching(BranchingConstraint):
         # Set bounds
         if self.direction == 'left':
             master.set_branching_bound(var, 'ub', self.bound)
-        else:  # right
+        else:
             master.set_branching_bound(var, 'lb', self.bound)
 
         master.Model.update()
@@ -230,10 +220,10 @@ class MPVariableBranching(BranchingConstraint):
         sum_{(j,t): chi^a_{njt}=1} (1-x_{njt}) + sum_{(j,t): chi^a_{njt}=0} x_{njt} >= 1
         """
         if subproblem.P != self.profile:
-            return  # Not relevant for other profiles
+            return
 
         if self.direction == 'right':
-            return  # No SP modification needed on right branch
+            return
 
         # Left branch: Add no-good cut
         if self.original_schedule is None or len(self.original_schedule) == 0:
@@ -246,7 +236,7 @@ class MPVariableBranching(BranchingConstraint):
 
         # Build no-good constraint
         terms = []
-        schedule_pattern = []  # For debugging
+        schedule_pattern = []
 
         for (p, j, t, a_orig), chi_value in self.original_schedule.items():
             if p != self.profile:
@@ -259,11 +249,9 @@ class MPVariableBranching(BranchingConstraint):
             x_var = subproblem.x[var_key]
 
             if chi_value == 1:
-                # Position where chi was 1 must be different
                 terms.append(1 - x_var)
                 schedule_pattern.append(f"x[{j},{t}]=1")
             else:
-                # Position where chi was 0 must be different
                 terms.append(x_var)
                 schedule_pattern.append(f"x[{j},{t}]=0")
 
@@ -292,7 +280,7 @@ class MPVariableBranching(BranchingConstraint):
         Returns:
             bool: Always True for MP branching (columns are not filtered)
         """
-        # MP branching doesn't filter columns - only sets variable bounds
+
         return True
 
     def __repr__(self):

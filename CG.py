@@ -13,7 +13,7 @@ from Utils.Pre_Patients.pre_patients_heuristic import *
 
 class ColumnGeneration:
     """
-    Column Generation class for solving patient scheduling problems.
+    Column Generation class for solving hybrid scheduling problems.
     Can be used standalone or as part of a Branch-and-Price framework.
     """
 
@@ -127,14 +127,12 @@ class ColumnGeneration:
         self.S_Bound = {}
         for p_idx in self.P_Join:
             self.S_Bound[p_idx] = max(10, math.ceil(
-                min((self.Req[p_idx] / self.W_coeff) + 2, max(self.D_Ext) - self.Entry[p_idx]) * (
-                            self.app_data["MS"][0] - self.app_data["MS_min"][0]) / self.app_data["MS"][0]))
+                min((self.Req[p_idx] / self.W_coeff) + 2, max(self.D_Ext) - self.Entry[p_idx]) * (self.app_data["MS"][0] - self.app_data["MS_min"][0]) / self.app_data["MS"][0]))
 
         # Create DataFrame
         print("[Setup] Creating data frame...")
         max_len = max(len(self.P), len(self.P_Pre), len(self.P_Post), len(self.P_F),
-                      len(self.P_Join), len(self.T), len(self.D), len(self.D_Full),
-                      len(self.D_Ext))
+                      len(self.P_Join), len(self.T), len(self.D), len(self.D_Full), len(self.D_Ext))
 
         self.data = pd.DataFrame({
             'P': self.P + [np.nan] * (max_len - len(self.P)),
@@ -159,12 +157,14 @@ class ColumnGeneration:
                 self.app_data['MS'][0], self.app_data['MS_min'][0],
                 self.Max_t, self.Nr_agg, self.therapist_to_type
             )
+
         print('Focus-Patients', self.P_F)
         print('Nr-Agg', self.Nr_agg)
         print('len(Focus-Patients)', len(self.P_F))
         print('Total Join-Patients', sum(self.Nr_agg[k] for k in sorted(self.P_F + self.P_Post)))
         print('Join-Patients', sorted(self.P_F + self.P_Post))
         print('len(Join-Patients)', len(sorted(self.P_F + self.P_Post)))
+
         # Build compact model
         print("[Setup] Building compact model...")
         self.problem = Problem_d(
@@ -252,7 +252,6 @@ class ColumnGeneration:
 
             # Check for dual improvement (stagnation detection)
             if itr == 1:
-                # First iteration - initialize best objective
                 self.best_lp_obj = current_lp_obj
                 improvement = 0.0
                 self.stagnation_counter = 0
@@ -268,7 +267,6 @@ class ColumnGeneration:
 
                 # Check if there's significant improvement
                 if relative_improvement > self.stagnation_threshold:
-                    # Good improvement - reset counter
                     self.stagnation_counter = 0
                     self.best_lp_obj = current_lp_obj
                     print(
@@ -299,8 +297,7 @@ class ColumnGeneration:
                 break
 
             # Solve subproblems in parallel
-            print(
-                f"Starting subproblem solving for {len(patients_to_solve)} of {len(self.P_Join)} patients on {multiprocessing.cpu_count()} cores.")
+            print(f"Starting subproblem solving for {len(patients_to_solve)} of {len(self.P_Join)} patients on {multiprocessing.cpu_count()} cores.")
             subproblem_start_time = time.time()
             results_from_workers_with_time = self._solve_subproblems_parallel(
                 patients_to_solve, duals_gamma, duals_pi
@@ -351,8 +348,7 @@ class ColumnGeneration:
 
             # Check convergence
             if modelImprovable:
-                print(
-                    f"Added {new_cols_added_count} new columns in iteration {itr}. Highest index used: {max_idx_this_iteration}")
+                print(f"Added {new_cols_added_count} new columns in iteration {itr}. Highest index used: {max_idx_this_iteration}")
                 self.master.Model.update()
                 next_base_col_idx = max_idx_this_iteration + 1
             else:
@@ -550,9 +546,6 @@ class ColumnGeneration:
         print(f"Is integral? {self.is_integral}")
         print(f"Compact model objective: {self.problem.Model.objVal:.5f}")
 
-        print("\n[Results] Active lambda variables:")
-        self.master.printLambda()
-
         print("\n[Results] Length of stay (LOS) for focus patients:")
         self.problem.printLOS()
 
@@ -586,7 +579,6 @@ class ColumnGeneration:
             'total_time': self.total_time,
             'compact_obj': self.problem.Model.objVal
         }
-
 
 def solve_subproblem_for_patient(args):
     """

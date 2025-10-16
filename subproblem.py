@@ -2,7 +2,6 @@ import gurobipy as gu
 import math
 from Utils.Generell.utils import *
 
-
 class Subproblem:
     def __init__(self, df, duals_gamma, duals_pi, duals_delta, p, col_id, Req, Entry, app_data, W_coeff, E_dict, S_Bound,
                  learn_method,
@@ -35,7 +34,6 @@ class Subproblem:
         self.R = list(range(1, 1 + self.S_Bound))
         if self.duals_delta != 0:
             print(f'Duals for {self.P} in itr. {self.itr}: {self.duals_delta, self.duals_gamma}')
-
 
     def _init_day_horizon(self):
         """Initialize the day horizon with optional reduction."""
@@ -111,6 +109,16 @@ class Subproblem:
         return [i * Y_bound / (self.num_tangents - 1) for i in range(self.num_tangents)]
 
     def buildModel(self):
+        self.Model.Params.MIPGap = 0.05
+        self.Model.Params.MIPFocus = 1
+        self.Model.Params.Heuristics = 0.5
+        self.Model.Params.Cuts = 1
+        self.Model.Params.Presolve = 2
+        self.Model.Params.TimeLimit = 60
+        self.Model.Params.IntFeasTol = 1e-5
+        self.Model.Params.FeasibilityTol = 1e-6
+        self.Model.Params.IntegralityFocus = 0
+        self.Model.Params.OutputFlag = 0
         self.genVars()
         self.genCons()
         self.genLearnCons()
@@ -583,18 +591,8 @@ class Subproblem:
 
     def solModel(self):
         """Solve the model."""
-        self.Model.Params.MIPGap = 0.05
-        self.Model.Params.MIPFocus = 1
-        self.Model.Params.Heuristics = 0.5
-        self.Model.Params.Cuts = 1
-        self.Model.Params.Presolve = 2
-        self.Model.Params.TimeLimit = 60
-        self.Model.Params.IntFeasTol = 1e-5
-        self.Model.Params.FeasibilityTol = 1e-6
-        self.Model.Params.IntegralityFocus = 0
-        self.Model.Params.OutputFlag = 0
-        self.Model.optimize()
 
+        self.Model.optimize()
         if self.Model.status == gu.GRB.INFEASIBLE:
             boxed_print('\nThe following constraints and variables are in the IIS:')
             self.Model.computeIIS()

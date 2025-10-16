@@ -11,7 +11,6 @@ def main():
     # ===========================
     # LOGGING CONFIGURATION
     # ===========================
-    # Options: 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
     setup_logging(log_level='INFO', log_to_file=True, log_dir='logs/info')
     setup_logging(log_level='DEBUG', log_to_file=True, log_dir='logs')
     setup_logging(log_level='ERROR', log_to_file=True, log_dir='logs')
@@ -26,7 +25,7 @@ def main():
     # CONFIGURATION PARAMETERS
     # ===========================
 
-    # Random seed for reproducibility
+    # Random seed
     seed = 14
 
     # Learning parameters
@@ -119,7 +118,7 @@ def main():
         learn_method=learn_method
     )
 
-    # Setup (generate data, build models, create initial solution)
+    # Setup
     cg_solver.setup()
 
     # ===========================
@@ -230,9 +229,7 @@ def main():
         print(f"  - Integral?: {results['is_integral']}")
 
     print("=" * 100 + "\n")
-
     return results
-
 
 if __name__ == "__main__":
     results = main()

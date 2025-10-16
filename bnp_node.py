@@ -1,6 +1,5 @@
 import math
 
-
 class BnPNode:
     """
     Represents a node in the Branch-and-Price search tree.
@@ -32,15 +31,13 @@ class BnPNode:
         self.path = path
 
         # Bounds and status
-        self.lp_bound = float('inf')  # LP relaxation (lower bound)
+        self.lp_bound = float('inf')
         self.is_integral = False
 
         # Branching constraints
-        # List of constraint objects active on this path
         self.branching_constraints = []
 
         # Column management
-        # All columns available at this node
         self.column_pool = {}
 
         # Status tracking
@@ -69,6 +66,7 @@ class BnPNode:
             f"  Branching Constraints: {len(self.branching_constraints)}",
             f"  Columns in Pool: {len(self.column_pool)}"
         ]
+
         if self.fathom_reason:
             info.append(f"  Fathom Reason: {self.fathom_reason}")
         return "\n".join(info)

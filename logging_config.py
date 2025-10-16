@@ -2,7 +2,6 @@ import logging
 import sys
 from datetime import datetime
 
-
 def setup_logging(log_level='INFO', log_to_file=True, log_dir='logs'):
     """
     Configure logging for Branch-and-Price solver.
@@ -53,8 +52,6 @@ def setup_logging(log_level='INFO', log_to_file=True, log_dir='logs'):
 
     return root_logger
 
-
-# Convenience function for different log levels
 def get_logger(name):
     """Get a logger for a specific module."""
     return logging.getLogger(name)

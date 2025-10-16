@@ -1,5 +1,3 @@
-import sys
-
 import gurobipy as gu
 from Utils.Generell.utils import *
 
@@ -15,7 +13,6 @@ class MasterProblem_d:
         self.G = df['G'].dropna().astype(int).unique().tolist()
         self.A = [1]
         self._solve_counter = 0
-        self.beta = 0.5
         self.Model = gu.Model("MasterProblem")
         self.cons_p_max = {}
         self.cons_los = {}
@@ -28,7 +25,6 @@ class MasterProblem_d:
         self.output_len = 100
         self.T_max = T_Max
         self.pre_x = pre_x
-        self.zero_count = {(p, a): 0 for p in self.P_Join for a in self.A}
         self.drop_threshold = 5
         self.column_pool = {}
         self.branching_bounds = {}
@@ -44,7 +40,6 @@ class MasterProblem_d:
 
     def genVars(self):
         self.lmbda = self.Model.addVars(self.P_Join, self.A, vtype=gu.GRB.INTEGER, name='lmbda')
-
 
     def genCons(self):
         for p in self.P_Join:
@@ -80,7 +75,6 @@ class MasterProblem_d:
         new_col = gu.Column(col, self.Model.getConstrs())
         self.lmbda[p, a] = self.Model.addVar(obj=coef[0], vtype=gu.GRB.INTEGER, column=new_col, name=f"lmbda[{p},{a}]")
         self.A.append(a)
-        self.zero_count[(p, a)] = 0
         self.Model.update()
 
     def finSol(self):
@@ -89,6 +83,7 @@ class MasterProblem_d:
         for var in self.lmbda.values():
             var.VType = gu.GRB.INTEGER
         self.Model.optimize()
+
         if self.Model.status == gu.GRB.INFEASIBLE:
             boxed_print('\nThe following constraints and variables are in the IIS:')
             self.Model.computeIIS()
@@ -97,8 +92,6 @@ class MasterProblem_d:
             for v in self.Model.getVars():
                 if v.IISLB: boxed_print(f'\t{v.varName} ≥ {v.LB}')
                 if v.IISUB: boxed_print(f'\t{v.varName} ≤ {v.UB}')
-        status_msg = "Optimal solution found" if self.Model.status == gu.GRB.OPTIMAL else "No optimal solution found"
-        boxed_print(f"*{'***** ' + status_msg + ' *****':^{self.output_len}}*")
 
         return all_integer, obj, most_frac_info
 
@@ -110,18 +103,16 @@ class MasterProblem_d:
         for var in self.Model.getVars():
             var.VType = gu.GRB.CONTINUOUS
 
-            # ✅ Restore branching bounds if they exist
+            # Restore branching bounds if they exist
             var_name = var.VarName
             if var_name in self.branching_bounds:
                 var.LB = self.branching_bounds[var_name]['lb']
                 var.UB = self.branching_bounds[var_name]['ub']
-                if self._solve_counter == 2:  # Only print once per node
+                if self._solve_counter == 2:
                     print(f"    [Branching Bound] Restored {var_name}: "
                           f"LB={var.LB}, UB={var.UB}")
             else:
-                # No branching bound - set default
                 var.LB = 0.0
-                # UB remains as is (usually infinity)
 
         if self._solve_counter > 1:
             self.Model.Params.LPWarmStart = 2
@@ -158,35 +149,29 @@ class MasterProblem_d:
         for (n, a), var in self.lmbda.items():
             x_val = var.X
 
-            # Berechne Distanzen zu floor und ceil
+            # Calculate distances to floor and ceil
             floor_val = math.floor(x_val)
             ceil_val = math.ceil(x_val)
             dist_to_floor = x_val - floor_val
             dist_to_ceil = ceil_val - x_val
 
-            # Fraktionalität ist die minimale Distanz zum nächsten Integer
             frac_part = min(dist_to_floor, dist_to_ceil)
 
             if frac_part > 1e-8:
                 all_integer = False
 
-                # Bestimme ob diese Variable die neue "most fractional" ist
                 is_new_most_frac = False
 
                 if frac_part > max_fractionality + 1e-10:
-                    # Höhere Fraktionalität gefunden
                     is_new_most_frac = True
                 elif abs(frac_part - max_fractionality) < 1e-10:
-                    # Gleiche Fraktionalität - Tie-Break anwenden
+                    # Equal fractionality - apply tie-break
                     if most_frac_info is not None:
                         if n < most_frac_info['n']:
-                            # Kleinerer n-Wert
                             is_new_most_frac = True
                         elif n == most_frac_info['n'] and a < most_frac_info['a']:
-                            # Gleicher n-Wert, aber kleinerer a-Wert
                             is_new_most_frac = True
                     else:
-                        # Erste fraktionale Variable
                         is_new_most_frac = True
 
                 if is_new_most_frac:
@@ -219,7 +204,14 @@ class MasterProblem_d:
         return all_integer, obj, most_frac_info
 
     def finalDicts(self, sols_dict, app_data, lambda_list_cg = None):
+        """
+        Determine final dicts
 
+        Args:
+            sols_dict: Solution dict
+            app_data: App_data
+            lambda_list_cg: List with lambda variables
+        """
         if lambda_list_cg is None:
             active_keys = []
             models = [self.Model]
@@ -253,49 +245,6 @@ class MasterProblem_d:
                 if not isinstance(app_data, (int, float)):
                     active_solutions['App'].update(sols_dict['App'][key])
         return active_solutions
-
-
-    def calculate_impact_score(self, reduced_cost, x_values, duals_td):
-        """
-        Calculates the impact score for a column
-
-        Args:
-            reduced_cost: reduced cost value of the column
-            x_values: Assignment variables (x_{ptd}) of the column
-            duals_td: Dual variables of the master problem for capacity constraints
-
-        Returns:
-            Impact Score = |reduced_cost| / (Capacity utilisation weighted with dual values)
-        """
-        capacity_usage = 0.0
-        for (t, d), value in x_values.items():
-            if value > 0.5:
-                capacity_usage += duals_td.get((t, d), 0) * value
-
-        if capacity_usage < 1e-10:
-            capacity_usage = 1e-10
-
-        return abs(reduced_cost) / capacity_usage
-
-    def printLambda(self):
-        models = [self.Model]
-        active_keys = []
-
-        for model in models:
-            for v in model.getVars():
-                if 'lmbda' in v.VarName and v.X > 0:
-                    parts = v.VarName.split('[')[1].split(']')[0].split(',')
-                    p = int(parts[0])
-                    s = int(parts[1])
-                    if p in self.P_Focus:
-                        solution_key = (p, s)
-                        active_keys.append(solution_key)
-                        if v.Obj > 1e-2:
-                            print(f'{v.VarName} = {v.X}, Obj-Coefficient: {round(v.Obj, 2)}')
-                    else:
-                        solution_key = (p, s)
-                        active_keys.append(solution_key)
-        return None
 
     def set_branching_bound(self, var, bound_type, value):
         """

@@ -425,7 +425,9 @@ class BranchAndPrice:
                     lambda_assignments = {}
                     for (p, a), var in master.lmbda.items():
                         if var.X > 0:
-                            lambda_assignments[(p, a)] = int(round(var.X))
+                            lambda_assignments[(p, a)] = var.X
+                            print(f"Benesss ({p,a}): {var.X}")
+
                     self.incumbent_lambdas = lambda_assignments
 
                     self.stats['incumbent_updates'] += 1
@@ -1795,7 +1797,6 @@ class BranchAndPrice:
             profile_n=n,
             agent_j=j,
             period_t=t,
-            value=1,
             dir='left',
             level=left_child.depth,
             floor_val=floor_val,
@@ -1822,7 +1823,6 @@ class BranchAndPrice:
             profile_n=n,
             agent_j=j,
             period_t=t,
-            value=1,
             dir='right',
             level=right_child.depth,
             floor_val=floor_val,
