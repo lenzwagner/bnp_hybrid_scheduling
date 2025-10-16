@@ -2543,9 +2543,9 @@ class BranchAndPrice:
             self.logger.error("No incumbent solution available!")
             return None
 
-        self.logger.info("\n" + "=" * 100)
-        self.logger.info(" EXTRACTING OPTIMAL SCHEDULES ".center(100, "="))
-        self.logger.info("=" * 100)
+        print("\n" + "=" * 100)
+        print(" EXTRACTING OPTIMAL SCHEDULES ".center(100, "="))
+        print("=" * 100)
 
         # Find the node with the incumbent solution
         incumbent_node = self._find_incumbent_node()
@@ -2554,9 +2554,9 @@ class BranchAndPrice:
 
         node = self.nodes[incumbent_node]
 
-        self.logger.info(f"\nExtracting from Node {incumbent_node}")
-        self.logger.info(f"  Objective Value: {self.incumbent:.6f}")
-        self.logger.info(f"  Status: {node.status}")
+        print(f"\nExtracting from Node {incumbent_node}")
+        print(f"  Objective Value: {self.incumbent:.6f}")
+        print(f"  Status: {node.status}")
 
         # Get Lambda values from incumbent
         master = self.cg_solver.master
@@ -2566,14 +2566,14 @@ class BranchAndPrice:
             if var.X > 0.5:  # Integer solution
                 lambda_assignments[(p, a)] = int(round(var.X))
 
-        self.logger.info(f"\nActive columns: {len(lambda_assignments)}")
+        print(f"\nActive columns: {len(lambda_assignments)}")
 
         # Disaggregate to individual patients
         patient_schedules = {}
         profile_counters = {}
 
         for (profile, col_id), count in sorted(lambda_assignments.items()):
-            self.logger.info(f"\n  Profile {profile}, Column {col_id}: {count} patients")
+            print(f"\n  Profile {profile}, Column {col_id}: {count} patients")
 
             # Get schedule from column pool
             if (profile, col_id) not in node.column_pool:
