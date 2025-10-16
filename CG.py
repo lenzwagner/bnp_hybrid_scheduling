@@ -160,7 +160,9 @@ class ColumnGeneration:
                 self.Max_t, self.Nr_agg, self.therapist_to_type
             )
         print('Focus-Patients', self.P_F)
+        print('Nr-Agg', self.Nr_agg)
         print('len(Focus-Patients)', len(self.P_F))
+        print('Total Join-Patients', sum(self.Nr_agg[k] for k in sorted(self.P_F + self.P_Post)))
         print('Join-Patients', sorted(self.P_F + self.P_Post))
         print('len(Join-Patients)', len(sorted(self.P_F + self.P_Post)))
         # Build compact model

@@ -1,3 +1,5 @@
+import sys
+
 import gurobipy as gu
 from Utils.Generell.utils import *
 
@@ -216,26 +218,25 @@ class MasterProblem_d:
 
         return all_integer, obj, most_frac_info
 
-    def finalDicts(self, sols_dict, app_data, with_post = None):
-        active_keys = []
-        models = [self.Model]
+    def finalDicts(self, sols_dict, app_data, lambda_list_cg = None):
 
-        for model in models:
-            for v in model.getVars():
-                if 'lmbda' in v.VarName and v.X > 0:
-                    parts = v.VarName.split('[')[1].split(']')[0].split(',')
-                    p = int(parts[0])
-                    s = int(parts[1])
-                    if with_post == None:
-                        if p in self.P_Focus:
-                            solution_key = (p, s)
-                            active_keys.append(solution_key)
-                            #if v.Obj > 1e-2:
-                                #print(f'{v.VarName} = {v.X}, Obj-Coefficient: {round(v.Obj, 2)}')
-                    else:
+        if lambda_list_cg is None:
+            active_keys = []
+            models = [self.Model]
+            for model in models:
+                for v in model.getVars():
+                    if 'lmbda' in v.VarName and v.X > 0:
+                        parts = v.VarName.split('[')[1].split(']')[0].split(',')
+                        p = int(parts[0])
+                        s = int(parts[1])
                         if p in self.P_Join:
                             solution_key = (p, s)
                             active_keys.append(solution_key)
+                            if v.Obj > 1e-2:
+                                print(f'{v.VarName} = {v.X}, Obj-Coefficient: {round(v.Obj, 2)}')
+
+        else:
+            active_keys = [k for k, v in lambda_list_cg.items() if v > 0]
 
         if isinstance(app_data, (int, float)):
             active_solutions = {'x': {}, 'LOS': {}, 'y': {}, 'z': {}, 'S': {}, 'l': {}}

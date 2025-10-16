@@ -50,6 +50,7 @@ class BranchAndPrice:
         # Global bounds
         self.incumbent = float('inf')  # Best IP solution (upper bound)
         self.incumbent_solution = None
+        self.incumbent_lambdas = None
         self.best_lp_bound = float('inf')  # Best LP bound (lower bound)
         self.gap = float('inf')
 
@@ -215,6 +216,9 @@ class BranchAndPrice:
 
             # Store in node pool with the correct column_id
             node.column_pool[(p, col_id)] = col_data
+
+        print(node.column_pool[(55, 1)])
+        print('ÄÄÄ')
 
         # Store node
         self.nodes[0] = node
@@ -416,8 +420,14 @@ class BranchAndPrice:
                     self.incumbent = ip_obj
                     self.incumbent_solution = master.finalDicts(
                         self.cg_solver.global_solutions,
-                        self.cg_solver.app_data
+                        self.cg_solver.app_data, None
                     )
+                    lambda_assignments = {}
+                    for (p, a), var in master.lmbda.items():
+                        if var.X > 0:
+                            lambda_assignments[(p, a)] = int(round(var.X))
+                    self.incumbent_lambdas = lambda_assignments
+
                     self.stats['incumbent_updates'] += 1
                     self.update_gap()
 
@@ -442,8 +452,14 @@ class BranchAndPrice:
                         self.incumbent = ip_obj
                         self.incumbent_solution = master.finalDicts(
                             self.cg_solver.global_solutions,
-                            self.cg_solver.app_data
+                            self.cg_solver.app_data, None
                         )
+                        lambda_assignments = {}
+                        for (p, a), var in master.lmbda.items():
+                            if var.X > 0:
+                                lambda_assignments[(p, a)] = int(round(var.X))
+                        self.incumbent_lambdas = lambda_assignments
+
                         self.stats['incumbent_updates'] += 1
                         self.update_gap()
                         self.logger.info(f"   Updated incumbent: {self.incumbent:.6f}\n")
@@ -485,7 +501,7 @@ class BranchAndPrice:
 
             return False
 
-    def should_fathom(self, node):
+    def should_fathom(self, node, lambdas_dict):
         """
         Determine if a node should be fathomed.
 
@@ -507,15 +523,17 @@ class BranchAndPrice:
 
             # Update incumbent if this is better
             if node.lp_bound < self.incumbent:
-                self.logger.info(f"\n✅ Node {node.node_id} found improving integral solution!")
-                self.logger.info(f"   Previous incumbent: {self.incumbent:.6f}")
-                self.logger.info(f"   New incumbent:      {node.lp_bound:.6f}")
+                print(f"\n✅ Node {node.node_id} found improving integral solution!")
+                print(f"   Previous incumbent: {self.incumbent:.6f}")
+                print(f"   New incumbent:      {node.lp_bound:.6f}")
 
                 self.incumbent = node.lp_bound
                 self.incumbent_solution = self.cg_solver.master.finalDicts(
                     self.cg_solver.global_solutions,
-                    self.cg_solver.app_data
+                    self.cg_solver.app_data, lambdas_dict
                 )
+
+                self.incumbent_lambdas = {k: int(v) for k, v in lambdas_dict.items() if v > 0}
                 self.stats['incumbent_updates'] += 1
                 self.update_gap()
 
@@ -545,127 +563,6 @@ class BranchAndPrice:
 
         # Node cannot be fathomed
         return False
-
-    def _compute_root_incumbent(self):
-        """
-        Compute initial incumbent by solving root RMP as IP after CG converges.
-
-        This provides the initial upper bound for Branch-and-Price.
-        Based on Paper Section 3.2.3: "Initialization & Feasibility Heuristic"
-
-        The RMP is solved as IP with all columns generated during root node CG.
-        This is more effective than solving after the first iteration because
-        all improving columns have been found.
-
-        Returns:
-            tuple: (success: bool, incumbent_value: float)
-        """
-        self.logger.info("=" * 100)
-        self.logger.info("Solving Root Master Problem as Integer Program...")
-        self.logger.info("This provides the initial upper bound (incumbent) for B&P.")
-        self.logger.info("=" * 100 + "\n")
-
-        self.stats['ip_solves'] += 1
-        master = self.cg_solver.master
-
-        try:
-            # Save current variable types
-            original_vtypes = {}
-            for var in master.lmbda.values():
-                original_vtypes[var.VarName] = var.VType
-                var.VType = gu.GRB.INTEGER
-
-            # Solve as IP
-            master.Model.Params.OutputFlag = 1
-            master.Model.Params.TimeLimit = 300  # 5 minute time limit
-            master.Model.update()
-
-            self.logger.info("[IP Solve] Starting optimization...")
-            master.Model.optimize()
-
-            # Check solution status
-            if master.Model.status == gu.GRB.OPTIMAL:
-                ip_obj = master.Model.objVal
-
-                # Update incumbent
-                if ip_obj < self.incumbent:
-                    self.incumbent = ip_obj + 10
-                    self.incumbent_solution = master.finalDicts(
-                        self.cg_solver.global_solutions,
-                        self.cg_solver.app_data
-                    )
-                    self.stats['incumbent_updates'] += 1
-                    self.update_gap()
-
-                    self.logger.info(f"\n{'=' * 100}")
-                    self.logger.info("✅ INITIAL INCUMBENT FOUND ".center(100, "="))
-                    self.logger.info(f"{'=' * 100}")
-                    self.logger.info(f"IP Objective:     {self.incumbent:.6f}")
-                    self.logger.info(
-                        f"LP Bound (root):  {master.Model.objBound:.6f}" if hasattr(master.Model, 'objBound') else "")
-                    self.logger.info(f"Gap:              {self.gap:.4%}")
-                    self.logger.info(f"{'=' * 100}\n")
-
-                    success = True
-                    result_obj = ip_obj
-                else:
-                    self.logger.warning(f"\n⚠️  IP solution not better than current incumbent")
-                    self.logger.info(f"   IP Objective:      {ip_obj:.6f}")
-                    self.logger.info(f"   Current Incumbent: {self.incumbent:.6f}\n")
-                    success = False
-                    result_obj = ip_obj
-
-            elif master.Model.status == gu.GRB.TIME_LIMIT:
-                self.logger.warning(f"\n⚠️  IP solve hit time limit")
-                if master.Model.SolCount > 0:
-                    ip_obj = master.Model.objVal
-                    self.logger.info(f"   Best found solution: {ip_obj:.6f}")
-                    if ip_obj < self.incumbent:
-                        self.incumbent = ip_obj + 10
-                        self.incumbent_solution = master.finalDicts(
-                            self.cg_solver.global_solutions,
-                            self.cg_solver.app_data
-                        )
-                        self.stats['incumbent_updates'] += 1
-                        self.update_gap()
-                        self.logger.info(f"   Updated incumbent: {self.incumbent:.6f}\n")
-                        success = True
-                        result_obj = ip_obj
-                    else:
-                        success = False
-                        result_obj = ip_obj
-                else:
-                    self.logger.info(f"   No feasible solution found within time limit\n")
-                    success = False
-                    result_obj = float('inf')
-
-            else:
-                self.logger.error(f"❌ IP solve unsuccessful (status={master.Model.status})")
-                success = False
-                result_obj = float('inf')
-
-            # Restore continuous relaxation for future LP solves
-            for var in master.lmbda.values():
-                var.VType = original_vtypes[var.VarName]
-
-            master.Model.Params.OutputFlag = 0
-            master.Model.Params.TimeLimit = float('inf')
-            master.Model.update()
-
-            return success, result_obj
-
-        except Exception as e:
-            self.logger.error(f"❌ Error during IP solve: {e}\n")
-
-            # Restore original variable types
-            for var in master.lmbda.values():
-                if var.VarName in original_vtypes:
-                    var.VType = original_vtypes[var.VarName]
-
-            master.Model.Params.OutputFlag = 0
-            master.Model.update()
-
-            return False, float('inf')
 
     def update_gap(self):
         """
@@ -714,7 +611,7 @@ class BranchAndPrice:
             self.open_nodes.append((lp_bound, 0))
 
         # Check if root can be fathomed
-        if self.should_fathom(root_node):
+        if self.should_fathom(root_node, None):
             self.logger.info(f"✅ Root node fathomed: {root_node.fathom_reason}")
             self.logger.info(f"   Solution is optimal!\n")
             self.stats['nodes_fathomed'] = 1
@@ -846,7 +743,7 @@ class BranchAndPrice:
             # ========================================
             # CHECK FATHOMING
             # ========================================
-            if self.should_fathom(current_node):
+            if self.should_fathom(current_node, node_lambdas):
                 self.logger.info(f"✅ Node {current_node_id} fathomed: {current_node.fathom_reason}")
                 self.stats['nodes_fathomed'] += 1
 
@@ -960,68 +857,6 @@ class BranchAndPrice:
             'total_time': self.stats['total_time'],
             'root_node': self.nodes[0]
         }
-
-    def _root_node_callback(self, iteration, cg_solver):
-        """
-        Callback executed after each CG iteration at root node.
-
-        After the first iteration, we solve the master as IP to get
-        an initial incumbent (upper bound).
-
-        Args:
-            iteration: Current CG iteration number
-            cg_solver: Reference to ColumnGeneration instance
-        """
-        # Only compute incumbent after first iteration
-        if iteration == 1:
-            self.logger.info(f"\n{'─' * 100}")
-            self.logger.info(" COMPUTING INITIAL INCUMBENT (after CG iteration 1) ".center(100, "─"))
-            self.logger.info(f"{'─' * 100}")
-
-            self.stats['ip_solves'] += 1
-
-            try:
-                # Solve current master as IP
-                self.logger.info("[Callback] Solving master problem as IP...")
-
-                # Set all lambda variables to integer
-                for var in cg_solver.master.lmbda.values():
-                    var.VType = gu.GRB.INTEGER
-
-                cg_solver.master.Model.Params.OutputFlag = 0  # Silent
-                cg_solver.master.Model.optimize()
-
-                if cg_solver.master.Model.status == 2:  # GRB.OPTIMAL
-                    ip_obj = cg_solver.master.Model.objVal
-
-                    # Update incumbent if better
-                    if ip_obj < self.incumbent:
-                        self.incumbent = ip_obj
-                        self.incumbent_solution = cg_solver.master.finalDicts(
-                            cg_solver.global_solutions,
-                            cg_solver.app_data
-                        )
-                        self.stats['incumbent_updates'] += 1
-                        self.update_gap()
-
-                        self.logger.info(f"[Callback] ✅ Initial incumbent found: {ip_obj:.6f}")
-                        self.logger.info(f"[Callback]    Current LP bound: {cg_solver.master.Model.objVal:.6f}")
-                        self.logger.info(f"[Callback]    Gap: {self.gap:.4%}")
-                    else:
-                        self.logger.info(f"[Callback] IP solution not better: {ip_obj:.6f} >= {self.incumbent:.6f}")
-                else:
-                    self.logger.warning(f"[Callback] ⚠️  IP solve unsuccessful (status={cg_solver.master.Model.status})")
-
-                # Reset variables to continuous for remaining CG iterations
-                for var in cg_solver.master.lmbda.values():
-                    var.VType = gu.GRB.CONTINUOUS  # GRB.CONTINUOUS
-
-                cg_solver.master.Model.Params.OutputFlag = 1  # Verbose again
-
-            except Exception as e:
-                self.logger.error(f"[Callback] ❌ Error computing initial incumbent: {e}")
-
-            self.logger.info(f"{'─' * 100}\n")
 
     # ============================================================================
     # BRANCHING LOGIC
@@ -2348,8 +2183,13 @@ class BranchAndPrice:
                     self.incumbent = ip_obj
                     self.incumbent_solution = master.finalDicts(
                         self.cg_solver.global_solutions,
-                        self.cg_solver.app_data
+                        self.cg_solver.app_data, None
                     )
+                    lambda_assignments = {}
+                    for (p, a), var in master.lmbda.items():
+                        if var.X > 0:
+                            lambda_assignments[(p, a)] = int(round(var.X))
+                    self.incumbent_lambdas = lambda_assignments
                     self.stats['incumbent_updates'] += 1
                     self.update_gap()
 
@@ -2378,8 +2218,13 @@ class BranchAndPrice:
                         self.incumbent = ip_obj
                         self.incumbent_solution = master.finalDicts(
                             self.cg_solver.global_solutions,
-                            self.cg_solver.app_data
+                            self.cg_solver.app_data, None
                         )
+                        lambda_assignments = {}
+                        for (p, a), var in master.lmbda.items():
+                            if var.X > 0:
+                                lambda_assignments[(p, a)] = int(round(var.X))
+                        self.incumbent_lambdas = lambda_assignments
                         self.stats['incumbent_updates'] += 1
                         self.update_gap()
 
@@ -2566,7 +2411,10 @@ class BranchAndPrice:
             if var.X > 0.5:  # Integer solution
                 lambda_assignments[(p, a)] = int(round(var.X))
 
-        print(f"\nActive columns: {len(lambda_assignments)}")
+        lambda_assignments = self.incumbent_lambdas
+        print(node.column_pool[(55, 1)])
+        sys.exit()
+        print('ööö', lambda_assignments)
 
         # Disaggregate to individual patients
         patient_schedules = {}
@@ -2682,6 +2530,13 @@ class BranchAndPrice:
                              f"(avg {avg_daily:.1f}/day)")
 
         self.logger.info("=" * 100)
+
+        print(f"\nActive columns: {len(lambda_assignments)}")
+        print(f"Total expected patients (Nr_agg): {len(self.cg_solver.P_Join)}")
+        print(f"Profiles in lambda_assignments: {set(p for p, _ in lambda_assignments.keys())}")
+        print(f"P_Focus: {self.cg_solver.P_F}")
+        print(f"P_Post: {self.cg_solver.P_Post}")
+        print(f"P_Join: {self.cg_solver.P_Join}")
 
         return {
             'patient_schedules': patient_schedules,
