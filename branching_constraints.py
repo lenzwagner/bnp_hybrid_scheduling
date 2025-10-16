@@ -157,29 +157,16 @@ class SPVariableBranching(BranchingConstraint):
 
     def is_column_compatible(self, column_data):
         """
-        Check if column's assignment chi^a_{njt} matches the constraint.
+        SP variable branching: All columns are compatible!
 
-        Args:
-            column_data: Dict with keys 'index', 'schedules_x', etc.
+        The master constraint regulates usage.
+        Column filtering is not necessary and can lead to bugs.
 
         Returns:
-            bool: True if compatible
+            bool: Always True
         """
-        if column_data.get('index') != self.profile:
-            return True  # Not relevant for other profiles
 
-        # Check the assignment in schedules_x
-        # schedules_x format: {(p, j, t, a): value}
-        schedule = column_data.get('schedules_x', {})
-
-        # Look for assignment (profile, agent, period, *)
-        for (p, j, t, a), val in schedule.items():
-            if p == self.profile and j == self.agent and t == self.period:
-                # Found the assignment, check if it matches constraint
-                return (val == self.value)
-
-        # If not found in schedule, it's implicitly 0
-        return (self.value == 0)
+        return True
 
     def __repr__(self):
         return (f"SPBranch(profile={self.profile}, agent={self.agent}, "

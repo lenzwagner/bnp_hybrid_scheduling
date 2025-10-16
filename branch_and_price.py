@@ -2398,23 +2398,12 @@ class BranchAndPrice:
             incumbent_node = self._get_best_integral_node()
 
         node = self.nodes[incumbent_node]
+        lambda_assignments = self.incumbent_lambdas
 
         print(f"\nExtracting from Node {incumbent_node}")
         print(f"  Objective Value: {self.incumbent:.6f}")
         print(f"  Status: {node.status}")
-
-        # Get Lambda values from incumbent
-        master = self.cg_solver.master
-        lambda_assignments = {}
-
-        for (p, a), var in master.lmbda.items():
-            if var.X > 0.5:  # Integer solution
-                lambda_assignments[(p, a)] = int(round(var.X))
-
-        lambda_assignments = self.incumbent_lambdas
-        print(node.column_pool[(55, 1)])
-        sys.exit()
-        print('ööö', lambda_assignments)
+        print(f"  Assignments: {lambda_assignments}")
 
         # Disaggregate to individual patients
         patient_schedules = {}
@@ -2532,7 +2521,8 @@ class BranchAndPrice:
         self.logger.info("=" * 100)
 
         print(f"\nActive columns: {len(lambda_assignments)}")
-        print(f"Total expected patients (Nr_agg): {len(self.cg_solver.P_Join)}")
+
+        print(f"Total expected patients (Nr_agg): {sum(self.cg_solver.Nr_agg[k] for k in sorted(self.cg_solver.P_F + self.cg_solver.P_Post))}")
         print(f"Profiles in lambda_assignments: {set(p for p, _ in lambda_assignments.keys())}")
         print(f"P_Focus: {self.cg_solver.P_F}")
         print(f"P_Post: {self.cg_solver.P_Post}")
