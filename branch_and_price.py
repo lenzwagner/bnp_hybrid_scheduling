@@ -56,6 +56,7 @@ class BranchAndPrice:
 
         # Reference to CG solver
         self.cg_solver = cg_solver
+        self.sp_solution_cache = {}
 
         # Search and Branching Configuration
         self.branching_strategy = branching_strategy
@@ -1615,6 +1616,11 @@ class BranchAndPrice:
         """
         from subproblem import Subproblem
 
+        # Get warmstart if available
+        warmstart = self.sp_solution_cache.get(profile, None)
+        if warmstart is not None:
+            warmstart = self._filter_warmstart_by_constraints(warmstart, node, profile)
+
         if branching_duals is None:
             branching_duals = {}
 
@@ -1658,7 +1664,8 @@ class BranchAndPrice:
             learn_method=self.cg_solver.learn_method,
             reduction=True,
             num_tangents=10,
-            node_path=node.path
+            node_path=node.path,
+            warmstart_solution=warmstart
         )
 
         sp.buildModel()
@@ -1746,6 +1753,23 @@ class BranchAndPrice:
 
         self.logger.info(f"        [Column] Added column ({profile}, {col_id}) "
                     f"with reduced cost {subproblem.Model.objVal:.6f}")
+
+        # Cache the solution for future warmstarts
+        solution = {
+            'x': subproblem.getOptVals('x')[0],
+            'y': subproblem.getOptVals('y')[0],
+            'z': subproblem.getOptVals('z')[0],
+            'l': subproblem.getOptVals('l')[0],
+            'S': subproblem.getOptVals('S')[0],
+            'LOS': subproblem.getOptVals('LOS')[0]
+        }
+
+        if hasattr(subproblem, 'App'):
+            solution['App'] = subproblem.getOptVals('App')[0]
+
+        self.sp_solution_cache[profile] = solution
+
+        self.logger.info(f"        [Cache] Stored solution for profile {profile}")
 
 
 
@@ -2622,3 +2646,30 @@ class BranchAndPrice:
 
         self.logger.info(f"\n✅ Schedules exported to {filename}")
         self.logger.info(f"   Total rows: {len(df)}")
+
+    def _filter_warmstart_by_constraints(self, warmstart, node, profile):
+        """
+        Filter warmstart solution to respect branching constraints.
+
+        If a branching constraint fixes x[n,j,t] to 0 or 1, adjust warmstart accordingly.
+        """
+        from branching_constraints import SPVariableBranching
+
+        filtered = warmstart.copy()
+
+        for constraint in node.branching_constraints:
+            if isinstance(constraint, SPVariableBranching):
+                if constraint.profile != profile:
+                    continue
+
+                n, j, t = constraint.profile, constraint.agent, constraint.period
+
+                # Adjust x variables
+                for key in list(filtered.get('x', {}).keys()):
+                    if key[0] == n and key[1] == j and key[2] == t:
+                        if constraint.dir == 'left':
+                            filtered['x'][key] = 0
+                        else:  # right
+                            filtered['x'][key] = 1
+
+        return filtered

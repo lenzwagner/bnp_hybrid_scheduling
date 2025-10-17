@@ -4,8 +4,7 @@ from Utils.Generell.utils import *
 
 class Subproblem:
     def __init__(self, df, duals_gamma, duals_pi, duals_delta, p, col_id, Req, Entry, app_data, W_coeff, E_dict, S_Bound,
-                 learn_method,
-                 reduction=False, num_tangents=10, node_path=''):
+                 learn_method, reduction=False, num_tangents=10, node_path='', warmstart_solution=None):
         self.reduction = reduction
         self.P = p
         self.W_coeff = W_coeff
@@ -16,6 +15,7 @@ class Subproblem:
         self.col_id = col_id
         self.itr = col_id
         self.Entry = Entry
+        self.warmstart_solution = warmstart_solution
         self.learn_method = learn_method
         self.num_tangents = num_tangents
         self.P_Full = df['P_Full'].dropna().astype(int).unique().tolist()
@@ -32,8 +32,8 @@ class Subproblem:
         self.M = max(self.D) + 1
         self.S_Bound = S_Bound[self.P]
         self.R = list(range(1, 1 + self.S_Bound))
-        if self.duals_delta != 0:
-            print(f'Duals for {self.P} in itr. {self.itr}: {self.duals_delta, self.duals_gamma}')
+        if self.duals_delta < 0:
+            print(f'Duals for {self.P} in path {self.node_path}: {self.duals_delta, self.duals_gamma}')
 
     def _init_day_horizon(self):
         """Initialize the day horizon with optional reduction."""
@@ -123,6 +123,8 @@ class Subproblem:
         self.genCons()
         self.genLearnCons()
         self.genObj()
+        if self.warmstart_solution is not None:
+            self._apply_warmstart()
         self.Model.update()
 
     def genVars(self):
@@ -613,3 +615,47 @@ class Subproblem:
             lst[ind] = 1
             return lst
         return None
+
+    def _apply_warmstart(self):
+        """
+        Apply warmstart solution from parent node's subproblem.
+
+        This sets PStart attribute on variables based on a previous solution.
+        Gurobi will use this as a starting point for the MIP solve.
+        """
+        ws = self.warmstart_solution
+
+        # Set start values for binary variables
+        for (p, t, d, a), val in ws.get('x', {}).items():
+            if (p, t, d, self.col_id) in self.x:
+                self.x[p, t, d, self.col_id].PStart = val
+
+        for (p, d), val in ws.get('y', {}).items():
+            if (p, d) in self.y:
+                self.y[p, d].PStart = val
+
+        for (p, d), val in ws.get('l', {}).items():
+            if (p, d) in self.l:
+                self.l[p, d].PStart = val
+
+        for (p, t), val in ws.get('z', {}).items():
+            if (p, t) in self.z:
+                self.z[p, t].PStart = val
+
+        # Set start values for continuous variables
+        if hasattr(self, 'App') and 'App' in ws:
+            for (p, d), val in ws['App'].items():
+                if (p, d) in self.App:
+                    self.App[p, d].PStart = val
+
+        if hasattr(self, 'S'):
+            for (p, d), val in ws.get('S', {}).items():
+                if (p, d) in self.S:
+                    self.S[p, d].PStart = val
+
+        # LOS
+        for (p, a), val in ws.get('LOS', {}).items():
+            if (p, self.col_id) in self.LOS:
+                self.LOS[p, self.col_id].PStart = val
+
+        print(f"    [Warmstart] Applied parent solution for profile {self.P}")
