@@ -618,44 +618,239 @@ class Subproblem:
 
     def _apply_warmstart(self):
         """
-        Apply warmstart solution from parent node's subproblem.
+        Apply warmstart solution to variables.
 
-        This sets PStart attribute on variables based on a previous solution.
-        Gurobi will use this as a starting point for the MIP solve.
+        CRITICAL: This must be called AFTER genVars() but BEFORE Model.update()
+
+        Handles:
+        1. Variable bound checking (respects branching constraints)
+        2. Partial warmstart (only compatible variables)
+        3. No-good cuts compatibility
         """
+        if self.warmstart_solution is None:
+            return
+
         ws = self.warmstart_solution
+        p = self.P
 
-        # Set start values for binary variables
-        for (p, t, d, a), val in ws.get('x', {}).items():
-            if (p, t, d, self.col_id) in self.x:
-                self.x[p, t, d, self.col_id].PStart = val
+        warmstart_count = 0
+        adjusted_count = 0
+        skipped_count = 0
 
-        for (p, d), val in ws.get('y', {}).items():
-            if (p, d) in self.y:
-                self.y[p, d].PStart = val
+        # ========================================
+        # 1. BINARY VARIABLES: x, y, z, l, w
+        # ========================================
 
-        for (p, d), val in ws.get('l', {}).items():
-            if (p, d) in self.l:
-                self.l[p, d].PStart = val
+        # X variables: x[p, t, d, col_id]
+        for key, val in ws.get('x', {}).items():
+            p_ws, t_ws, d_ws, old_col_id = key
 
-        for (p, t), val in ws.get('z', {}).items():
-            if (p, t) in self.z:
-                self.z[p, t].PStart = val
+            if p_ws != p:
+                continue
 
-        # Set start values for continuous variables
-        if hasattr(self, 'App') and 'App' in ws:
-            for (p, d), val in ws['App'].items():
-                if (p, d) in self.App:
-                    self.App[p, d].PStart = val
+            new_key = (p, t_ws, d_ws, self.col_id)
 
+            if new_key not in self.x:
+                skipped_count += 1
+                continue
+
+            var = self.x[new_key]
+
+            # Check if variable is fixed by branching constraint
+            if var.LB == var.UB:
+                # Variable is fixed - use fixed value
+                var.PStart = var.LB
+                adjusted_count += 1
+            elif var.LB <= val <= var.UB:
+                # Variable is free - use warmstart value
+                var.PStart = val
+                warmstart_count += 1
+            else:
+                # Warmstart value violates bounds - use closest bound
+                if val < var.LB:
+                    var.PStart = var.LB
+                else:
+                    var.PStart = var.UB
+                adjusted_count += 1
+
+        # Y variables: y[p, d]
+        for key, val in ws.get('y', {}).items():
+            p_ws, d_ws = key
+
+            if p_ws != p:
+                continue
+
+            if key not in self.y:
+                skipped_count += 1
+                continue
+
+            var = self.y[key]
+
+            if var.LB <= val <= var.UB:
+                var.PStart = val
+                warmstart_count += 1
+            else:
+                var.PStart = max(var.LB, min(val, var.UB))
+                adjusted_count += 1
+
+        # Z variables: z[p, t]
+        for key, val in ws.get('z', {}).items():
+            p_ws, t_ws = key
+
+            if p_ws != p:
+                continue
+
+            if key not in self.z:
+                skipped_count += 1
+                continue
+
+            var = self.z[key]
+
+            if var.LB <= val <= var.UB:
+                var.PStart = val
+                warmstart_count += 1
+            else:
+                var.PStart = max(var.LB, min(val, var.UB))
+                adjusted_count += 1
+
+        # L variables: l[p, d]
+        for key, val in ws.get('l', {}).items():
+            p_ws, d_ws = key
+
+            if p_ws != p:
+                continue
+
+            if key not in self.l:
+                skipped_count += 1
+                continue
+
+            var = self.l[key]
+
+            if var.LB <= val <= var.UB:
+                var.PStart = val
+                warmstart_count += 1
+
+        # W variables: w[p, d]
+        if hasattr(self, 'w'):
+            for key, val in ws.get('w', {}).items():
+                p_ws, d_ws = key
+
+                if p_ws != p:
+                    continue
+
+                if key not in self.w:
+                    continue
+
+                var = self.w[key]
+                if var.LB <= val <= var.UB:
+                    var.PStart = val
+                    warmstart_count += 1
+
+        # ========================================
+        # 2. CONTINUOUS VARIABLES: S, App, h_eff
+        # ========================================
+
+        # S variables: S[p, d]
         if hasattr(self, 'S'):
-            for (p, d), val in ws.get('S', {}).items():
-                if (p, d) in self.S:
-                    self.S[p, d].PStart = val
+            for key, val in ws.get('S', {}).items():
+                p_ws, d_ws = key
 
-        # LOS
-        for (p, a), val in ws.get('LOS', {}).items():
-            if (p, self.col_id) in self.LOS:
-                self.LOS[p, self.col_id].PStart = val
+                if p_ws != p:
+                    continue
 
-        print(f"    [Warmstart] Applied parent solution for profile {self.P}")
+                if key not in self.S:
+                    continue
+
+                var = self.S[key]
+                if var.LB <= val <= var.UB:
+                    var.PStart = val
+                    warmstart_count += 1
+
+        # App variables: App[p, d]
+        if hasattr(self, 'App') and 'App' in ws:
+            for key, val in ws.get('App', {}).items():
+                p_ws, d_ws = key
+
+                if p_ws != p:
+                    continue
+
+                if key not in self.App:
+                    continue
+
+                var = self.App[key]
+                if var.LB <= val <= var.UB:
+                    var.PStart = val
+                    warmstart_count += 1
+
+        # h_eff variables: h_eff[p, d]
+        if hasattr(self, 'h_eff') and 'h_eff' in ws:
+            for key, val in ws.get('h_eff', {}).items():
+                p_ws, d_ws = key
+
+                if p_ws != p:
+                    continue
+
+                if key not in self.h_eff:
+                    continue
+
+                var = self.h_eff[key]
+                if var.LB <= val <= var.UB:
+                    var.PStart = val
+                    warmstart_count += 1
+
+        # ========================================
+        # 3. INTEGER VARIABLES: LOS
+        # ========================================
+
+        # LOS variables: LOS[p, col_id]
+        for key, val in ws.get('LOS', {}).items():
+            p_ws, old_col_id = key
+
+            if p_ws != p:
+                continue
+
+            new_key = (p, self.col_id)
+
+            if new_key not in self.LOS:
+                continue
+
+            var = self.LOS[new_key]
+            if var.LB <= val <= var.UB:
+                var.PStart = val
+                warmstart_count += 1
+
+        # ========================================
+        # 4. SPECIAL: z_pdr for Linearization
+        # ========================================
+
+        if hasattr(self, 'z_pdr') and 'z_pdr' in ws:
+            for key, val in ws.get('z_pdr', {}).items():
+                if key in self.z_pdr:
+                    var = self.z_pdr[key]
+                    if var.LB <= val <= var.UB:
+                        var.PStart = val
+                        warmstart_count += 1
+
+        # ========================================
+        # LOGGING
+        # ========================================
+
+        if warmstart_count > 0 or adjusted_count > 0:
+            self.warmstart_applied = True
+            self.warmstart_variables_set = warmstart_count
+            self.warmstart_variables_adjusted = adjusted_count
+
+            # Only log if significant warmstart was applied
+            if warmstart_count > 5:
+                print(f"      [Warmstart] Profile {p}: "
+                      f"Set {warmstart_count} vars, "
+                      f"adjusted {adjusted_count}, "
+                      f"skipped {skipped_count}")
+
+    def get_warmstart_statistics(self):
+        """Return warmstart statistics for this subproblem solve."""
+        return {
+            'applied': self.warmstart_applied,
+            'variables_set': self.warmstart_variables_set,
+            'variables_adjusted': self.warmstart_variables_adjusted
+        }

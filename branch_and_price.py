@@ -21,7 +21,7 @@ class BranchAndPrice:
     """
 
     def __init__(self, cg_solver, branching_strategy='mp', search_strategy='dfs', verbose=True,
-                 ip_heuristic_frequency=10, early_incumbent_iteration=0):
+                 ip_heuristic_frequency=10, early_incumbent_iteration=0, use_warmstart=True):
         """
         Initialize Branch-and-Price with existing CG solver.
 
@@ -35,6 +35,7 @@ class BranchAndPrice:
                                       - If 0 or None: solve final RMP as IP (after CG converges)
                                       - If > 0: solve RMP as IP after this iteration,
                                                then continue CG without further IP solves
+            use_warmstart: If True, use warmstart to solve subproblems
         """
         # Logger
         self.logger = logging.getLogger(__name__)
@@ -115,6 +116,17 @@ class BranchAndPrice:
         self.logger.info("=" * 100)
         self.logger.info(f"CG Solver ready with {len(self.cg_solver.P_Join)} patients")
         self.logger.info(f"Branching strategy: {self.branching_strategy.upper()}")
+
+        # Warmstart
+        self.use_warmstart = use_warmstart
+        self.warmstart_stats = {
+            'total_warmstarts': 0,
+            'successful_warmstarts': 0,
+            'variables_warmed': 0,
+            'time_saved': 0.0
+        }
+
+        self.logger.info(f"Warmstart: {'Enabled' if use_warmstart else 'Disabled'}")
 
     def _print(self, *args, **kwargs):
         """Print only if verbose mode is enabled."""
@@ -1162,6 +1174,12 @@ class BranchAndPrice:
 
         self.stats['nodes_branched'] += 1
 
+        if hasattr(parent_node, 'sp_warmstart_cache'):
+            left_child.sp_warmstart_cache = parent_node.sp_warmstart_cache.copy()
+            right_child.sp_warmstart_cache = parent_node.sp_warmstart_cache.copy()
+
+            self.logger.info(f"    [Warmstart] Transferred full cache to MP-branched children")
+
         return left_child, right_child
 
     def _solve_initial_lp(self, node):
@@ -1256,6 +1274,9 @@ class BranchAndPrice:
         threshold = self.cg_solver.threshold  # Use same threshold as CG
         cg_iteration = 0
 
+        # Track SP solutions for warmstart within this node
+        sp_warmstart_cache = {}
+
         # Node time limit
         node_start_time = time.time()
         NODE_TIME_LIMIT = 300
@@ -1297,6 +1318,11 @@ class BranchAndPrice:
             columns_added_this_iter = 0
 
             for profile in self.cg_solver.P_Join:
+                # Use warmstart
+                warmstart_solution = None
+                if self.use_warmstart and profile in sp_warmstart_cache:
+                    warmstart_solution = sp_warmstart_cache[profile]
+
                 # Build and solve subproblem with branching constraints
                 sp = self._build_subproblem_for_node(
                     profile, node, duals_pi, duals_gamma, branching_duals
@@ -1312,6 +1338,18 @@ class BranchAndPrice:
                 if sp.Model.status == 2 and sp.Model.objVal < -threshold:
                     self.logger.info(f'Red. cost for profile {profile} : {sp.Model.objVal}')
 
+                    # Extract and cache solution for next iteration
+                    sp_solution = self._extract_sp_solution(sp)
+                    sp_warmstart_cache[profile] = sp_solution
+
+                    # Track warmstart statistics
+                    if warmstart_solution is not None:
+                        ws_stats = sp.get_warmstart_statistics()
+                        if ws_stats['applied']:
+                            self.warmstart_stats['successful_warmstarts'] += 1
+                            self.warmstart_stats['variables_warmed'] += ws_stats['variables_set']
+
+
                     # Add column to node and master
                     self._add_column_from_subproblem(sp, profile, node, master)
                     new_columns_found = True
@@ -1325,6 +1363,8 @@ class BranchAndPrice:
                 self.logger.info(f"    [CG] Converged after {cg_iteration} iterations - no improving columns found")
                 break
             master.Model.update()
+
+        node.sp_warmstart_cache = sp_warmstart_cache
 
 
         # 4. Final LP solve and integrality check
@@ -1598,7 +1638,7 @@ class BranchAndPrice:
         self.logger.info(f"      Found {sp_constraints_found} SP branching duals\n")
         return branching_duals
 
-    def _build_subproblem_for_node(self, profile, node, duals_pi, duals_gamma, branching_duals=None):
+    def _build_subproblem_for_node(self, profile, node, duals_pi, duals_gamma, branching_duals=None, warmstart_solution=None):
         """
         Build subproblem for a profile at a node with branching constraints.
 
@@ -1665,7 +1705,7 @@ class BranchAndPrice:
             reduction=True,
             num_tangents=10,
             node_path=node.path,
-            warmstart_solution=warmstart
+            warmstart_solution=warmstart_solution
         )
 
         sp.buildModel()
@@ -1858,6 +1898,22 @@ class BranchAndPrice:
 
         self._inherit_columns_from_parent(right_child, parent_node)
 
+        if hasattr(parent_node, 'sp_warmstart_cache'):
+            # Filter warmstart cache based on branching constraint
+            left_cache = self._filter_warmstart_for_branching(
+                parent_node.sp_warmstart_cache, left_child
+            )
+            right_cache = self._filter_warmstart_for_branching(
+                parent_node.sp_warmstart_cache, right_child
+            )
+
+            left_child.sp_warmstart_cache = left_cache
+            right_child.sp_warmstart_cache = right_cache
+
+            self.logger.info(f"    [Warmstart] Transferred cache to children "
+                             f"(Left: {len(left_cache)}, Right: {len(right_cache)} profiles)")
+
+
         # -------------------------
         # EVALUATE AND STORE NODES
         # -------------------------
@@ -1893,6 +1949,8 @@ class BranchAndPrice:
         self.logger.info(f"{'=' * 100}\n")
 
         self.stats['nodes_branched'] += 1
+
+
 
         return left_child, right_child
 
@@ -2673,3 +2731,91 @@ class BranchAndPrice:
                             filtered['x'][key] = 1
 
         return filtered
+
+    def _extract_sp_solution(self, subproblem):
+        """
+        Extract complete solution from subproblem for warmstart.
+
+        Returns:
+            dict: Solution with all variable values
+        """
+        solution = {}
+
+        # Extract binary variables
+        solution['x'] = subproblem.getOptVals('x')[0]
+        solution['y'] = subproblem.getOptVals('y')[0]
+        solution['z'] = subproblem.getOptVals('z')[0]
+        solution['l'] = subproblem.getOptVals('l')[0]
+
+        if hasattr(subproblem, 'w'):
+            solution['w'] = subproblem.getOptVals('w')[0]
+
+        # Extract continuous variables
+        if hasattr(subproblem, 'S'):
+            solution['S'] = subproblem.getOptVals('S')[0]
+
+        if hasattr(subproblem, 'App'):
+            solution['App'] = subproblem.getOptVals('App')[0]
+
+        if hasattr(subproblem, 'h_eff'):
+            solution['h_eff'] = subproblem.getOptVals('h_eff')[0]
+
+        # Extract integer variables
+        solution['LOS'] = subproblem.getOptVals('LOS')[0]
+
+        # Extract special variables if present
+        if hasattr(subproblem, 'z_pdr'):
+            solution['z_pdr'] = subproblem.getOptVals('z_pdr')[0]
+
+        return solution
+
+    def _filter_warmstart_for_branching(self, warmstart_cache, child_node):
+        """
+        Filter warmstart cache based on child node's branching constraints.
+
+        CRITICAL: For SP-Variable branching, we need to adjust x variables
+                  that are fixed by the branching constraint.
+
+        Args:
+            warmstart_cache: Dict {profile: solution_dict}
+            child_node: BnPNode with branching constraints
+
+        Returns:
+            dict: Filtered warmstart cache
+        """
+        from branching_constraints import SPVariableBranching
+
+        filtered_cache = {}
+
+        for profile, solution in warmstart_cache.items():
+            # Copy solution
+            filtered_solution = {
+                var_name: var_dict.copy()
+                for var_name, var_dict in solution.items()
+            }
+
+            # Apply SP branching adjustments
+            for constraint in child_node.branching_constraints:
+                if not isinstance(constraint, SPVariableBranching):
+                    continue
+
+                if constraint.profile != profile:
+                    continue
+
+                n, j, t = constraint.profile, constraint.agent, constraint.period
+
+                # Adjust x variables in warmstart
+                for key in list(filtered_solution.get('x', {}).keys()):
+                    p_key, j_key, t_key, col_id = key
+
+                    if p_key == n and j_key == j and t_key == t:
+                        if constraint.dir == 'left':
+                            # x[n,j,t] = 0 forced
+                            filtered_solution['x'][key] = 0
+                        else:
+                            # x[n,j,t] = 1 forced
+                            filtered_solution['x'][key] = 1
+
+            filtered_cache[profile] = filtered_solution
+
+        return filtered_cache
