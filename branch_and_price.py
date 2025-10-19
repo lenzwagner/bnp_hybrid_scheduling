@@ -1318,10 +1318,17 @@ class BranchAndPrice:
             columns_added_this_iter = 0
 
             for profile in self.cg_solver.P_Join:
-                # Use warmstart
                 warmstart_solution = None
                 if self.use_warmstart and profile in sp_warmstart_cache:
                     warmstart_solution = sp_warmstart_cache[profile]
+                    print(f"\n🔍 [DEBUG] Using warmstart for profile {profile}")
+                    print(f"    Cache keys: {list(warmstart_solution.keys())}")
+                    print(f"    Sample x values: {list(warmstart_solution.get('x', {}).items())[:3]}")
+                else:
+                    print(f"\n🔍 [DEBUG] NO warmstart for profile {profile}")
+                    print(f"    use_warmstart: {self.use_warmstart}")
+                    print(f"    profile in cache: {profile in sp_warmstart_cache}")
+                    print(f"    cache size: {len(sp_warmstart_cache)}")
 
                 # Build and solve subproblem with branching constraints
                 sp = self._build_subproblem_for_node(
@@ -1661,6 +1668,9 @@ class BranchAndPrice:
         if warmstart is not None:
             warmstart = self._filter_warmstart_by_constraints(warmstart, node, profile)
 
+        print(f"\n🔍 [_build_subproblem_for_node] Profile {profile}")
+        print(f"    warmstart_solution parameter: {warmstart is not None}")
+
         if branching_duals is None:
             branching_duals = {}
 
@@ -1705,7 +1715,7 @@ class BranchAndPrice:
             reduction=True,
             num_tangents=10,
             node_path=node.path,
-            warmstart_solution=warmstart_solution
+            warmstart_solution=warmstart
         )
 
         sp.buildModel()
@@ -1806,6 +1816,7 @@ class BranchAndPrice:
 
         if hasattr(subproblem, 'App'):
             solution['App'] = subproblem.getOptVals('App')[0]
+            print('Porno', solution)
 
         self.sp_solution_cache[profile] = solution
 
