@@ -17,3 +17,6 @@ scipy>=1.7.0
 
 # Logging
 tqdm>=0.0.1
+
+# Trees
+networkx>=3.5
