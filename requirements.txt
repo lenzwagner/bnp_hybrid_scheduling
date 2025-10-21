@@ -14,3 +14,6 @@ seaborn>=0.11.0
 
 # Optional: For advanced analytics
 scipy>=1.7.0
+
+# Visualization
+networkx>= 3.5
