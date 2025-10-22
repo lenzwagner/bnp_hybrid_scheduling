@@ -1,194 +1,287 @@
-from Utils.Generell.utils import *
 
-def check_instance_feasibility(R_p, Entry_p, Max_t, P, D, D_Full, T, W_coeff, app_data, verbose=True):
+from collections import defaultdict
+import numpy as np
+from Utils.Generell.utils import boxed_print
+
+
+def check_instance_feasibility_extended(R_p, Entry_p, Max_t, P, D, D_Full, T, W_coeff, verbose=True):
     """
-    Check if a generated instance is feasible for the patient scheduling problem.
-    Accounts for Post-patients not requiring discharge within the horizon.
+    Enhanced feasibility check with detailed entry-day analysis.
+
+    This function performs comprehensive feasibility checks BEFORE optimization:
+    1. Entry day capacity vs. demand (CRITICAL - must be satisfied)
+    2. Total capacity vs. total demand
+    3. Individual patient schedulability
+    4. Work cycle consistency
 
     Parameters:
     - R_p (dict): Patient requirements (number of treatments needed)
     - Entry_p (dict): Patient entry days
-    - Max_t (dict): Therapist capacity as (therapist, day) -> capacity (treatment slots)
+    - Max_t (dict): Therapist capacity as (therapist, day) -> capacity
     - P (list): List of patient IDs
     - D (list): Focus horizon days
-    - D_Ext (list): Extended horizon days
     - D_Full (list): Full horizon days
     - T (list): List of therapist IDs
-    - M_p (dict): Mean LOS per patient
-    - W_coeff (float): Work cycle coefficient (W_on / (W_on + W_off))
-    - app_data (dict): Application data with parameters like W, W_min
-    - verbose (bool): If True, boxed_print detailed feasibility analysis
+    - W_coeff (float): Work cycle coefficient
+    - verbose (bool): If True, print detailed analysis
 
     Returns:
-    - bool: True if the instance is feasible, False otherwise
-    - dict: Dictionary with feasibility check results and details
+    - is_feasible (bool): True if instance is feasible
+    - results (dict): Detailed analysis including problematic periods
     """
-    # Categorize patients into Pre, Focus, and Post
-    P_Pre, P_F, P_Post, P_Join = categorize_patients(Entry_p, D)
+
+    if verbose:
+        boxed_print("INSTANCE FEASIBILITY PRE-CHECK", width=100, center=True)
 
     results = {
         "is_feasible": True,
         "issues": [],
-        "entry_day_check": {},
-        "capacity_check": {},
-        "los_check": {},
-        "total_demand_vs_capacity": {},
-        "work_cycle_check": {}
+        "entry_day_analysis": {},
+        "bottleneck_periods": [],
+        "total_capacity_check": {},
+        "patient_schedulability": {}
     }
 
-    # 1. Check therapist capacity on entry days (applies to all patients)
+    # Categorize patients
+    P_Pre, P_F, P_Post, P_Join = categorize_patients(Entry_p, D)
+
+    # ========================================================================
+    # CRITICAL CHECK 1: Entry Day Capacity vs. Demand
+    # ========================================================================
     if verbose:
-        boxed_print("\n=== Checking Therapist Capacity on Entry Days ===")
-    entry_day_counts = defaultdict(int)
+        boxed_print("CHECK 1: Entry Day Capacity vs. Demand", width=100, center=False)
+
+    entry_day_demand = defaultdict(int)
+    entry_day_patients = defaultdict(list)
+
     for p in P:
         entry_day = Entry_p[p]
-        entry_day_counts[entry_day] += 1  # Each patient needs one treatment slot on entry day
+        if entry_day in D_Full:
+            entry_day_demand[entry_day] += 1  # Each patient needs exactly 1 slot on entry
+            entry_day_patients[entry_day].append(p)
 
-    for d in sorted(set(Entry_p.values()) & set(D_Full)):  # Only check days with patient entries
+    for d in sorted(entry_day_demand.keys()):
         total_capacity = sum(Max_t.get((t, d), 0) for t in T)
-        patients_entering = entry_day_counts.get(d, 0)
-        if patients_entering > total_capacity:
-            results["is_feasible"] = False
-            issue = (f"Entry day {d}: {patients_entering} patients enter, but only "
-                     f"{total_capacity} treatment slots available.")
-            results["issues"].append(issue)
-            results["entry_day_check"][d] = {
-                "patients": patients_entering,
-                "capacity": total_capacity,
-                "feasible": False
-            }
-            if verbose:
-                boxed_print(issue)
-        else:
-            results["entry_day_check"][d] = {
-                "patients": patients_entering,
-                "capacity": total_capacity,
-                "feasible": True
-            }
-            if verbose:
-                boxed_print(f"Entry day {d}: {patients_entering} patients, {total_capacity} slots - Feasible")
+        demand = entry_day_demand[d]
+        deficit = max(0, demand - total_capacity)
 
-    # 2. Check total therapist capacity vs. total patient demand
-    # For Pre and Focus patients: full requirements (R_p[p])
-    # For Post patients: only entry day treatment (1 treatment)
+        results["entry_day_analysis"][d] = {
+            "demand": demand,
+            "capacity": total_capacity,
+            "deficit": deficit,
+            "patients": entry_day_patients[d],
+            "feasible": demand <= total_capacity
+        }
+
+        if demand > total_capacity:
+            results["is_feasible"] = False
+            issue = (f"Period {d}: {demand} patients must start, "
+                     f"but only {total_capacity} slots available (DEFICIT: {deficit})")
+            results["issues"].append(issue)
+            results["bottleneck_periods"].append(d)
+
+            if verbose:
+                boxed_print(f"❌ {issue}", width=100, center=False)
+                affected_str = f"   Affected patients: {entry_day_patients[d][:15]}"
+                if len(entry_day_patients[d]) > 15:
+                    affected_str += f"... (+{len(entry_day_patients[d]) - 15} more)"
+                boxed_print(affected_str, width=100, center=False)
+        else:
+            slack = total_capacity - demand
+            if verbose:
+                status = "✅" if slack >= 2 else "⚠️ " if slack >= 1 else "🔥"
+                boxed_print(f"{status} Period {d}: {demand} patients, {total_capacity} slots (slack: {slack})",
+                            width=100, center=False)
+
+    # ========================================================================
+    # CHECK 2: Total Capacity vs. Total Demand
+    # ========================================================================
     if verbose:
-        boxed_print("\n=== Checking Total Capacity vs. Demand ===")
+        boxed_print("\nCHECK 2: Total Capacity vs. Total Demand", width=100, center=False)
+
     total_capacity = sum(Max_t.get((t, d), 0) for t in T for d in D_Full)
-    total_demand = sum(R_p[p] for p in P_Pre + P_F) + len(P_Post)  # Post-patients need 1 treatment
-    results["total_demand_vs_capacity"] = {
+    # Pre and Focus patients need full requirements, Post patients need only entry treatment
+    total_demand = sum(R_p[p] for p in P_Pre + P_F) + len(P_Post)
+
+    results["total_capacity_check"] = {
         "total_capacity": total_capacity,
         "total_demand": total_demand,
+        "utilization": total_demand / total_capacity if total_capacity > 0 else float('inf'),
         "feasible": total_demand <= total_capacity
     }
+
     if total_demand > total_capacity:
         results["is_feasible"] = False
-        issue = (f"Total demand ({total_demand} treatments) exceeds total capacity "
-                 f"({total_capacity} treatments).")
+        issue = f"Total demand ({total_demand}) exceeds total capacity ({total_capacity})"
         results["issues"].append(issue)
         if verbose:
-            boxed_print(issue)
+            boxed_print(f"❌ {issue}", width=100, center=False)
     else:
+        utilization_pct = (total_demand / total_capacity * 100) if total_capacity > 0 else 0
         if verbose:
-            boxed_print(f"Total capacity: {total_capacity}, Total demand: {total_demand} - Feasible")
+            boxed_print(f"✅ Total capacity: {total_capacity}, Total demand: {total_demand} "
+                        f"(Utilization: {utilization_pct:.1f}%)", width=100, center=False)
 
-    # 3. Check LOS constraints for Pre and Focus patients only
+    # ========================================================================
+    # CHECK 3: Individual Patient Schedulability (Focus patients only)
+    # ========================================================================
     if verbose:
-        boxed_print("\n=== Checking LOS Constraints (Pre and Focus Patients) ===")
-    W = app_data["MS"][0]
-    W_min = app_data["MS_min"][0]
-    for p in P_Pre + P_F:  # Exclude Post-patients
+        boxed_print("\nCHECK 3: Patient Schedulability", width=100, center=False)
+
+    unschedulable_patients = []
+    for p in P_F:  # Only check Focus patients (Pre are already treated, Post don't need discharge)
         entry_day = Entry_p[p]
         req = R_p[p]
-        # Calculate feasible days for scheduling
+
+        # Days available for this patient
         available_days = [d for d in D_Full if d >= entry_day]
+        # Capacity available after entry
         available_capacity = sum(Max_t.get((t, d), 0) for t in T for d in available_days)
-        # Estimate minimum days needed based on W_min requirement
-        min_days_needed = int(np.ceil(req / W_min)) if W_min > 0 else len(D_Full)
-        if len(available_days) < min_days_needed:
+
+        # Rough estimate: can patient be scheduled?
+        if len(available_days) < req or available_capacity < req:
             results["is_feasible"] = False
-            issue = (f"Patient {p}: Requires {req} treatments, but only {len(available_days)} "
-                     f"days available after entry day {entry_day} (min {min_days_needed} needed).")
+            issue = f"Patient {p}: Needs {req} treatments, only {len(available_days)} days and {available_capacity} capacity available"
             results["issues"].append(issue)
-            results["los_check"][p] = {
+            results["patient_schedulability"][p] = {
                 "requirements": req,
                 "available_days": len(available_days),
-                "min_days_needed": min_days_needed,
-                "feasible": False
-            }
-            if verbose:
-                boxed_print(issue)
-        elif available_capacity < req:
-            results["is_feasible"] = False
-            issue = (f"Patient {p}: Requires {req} treatments, but only {available_capacity} "
-                     f"treatment slots available after entry day {entry_day}.")
-            results["issues"].append(issue)
-            results["los_check"][p] = {
-                "requirements": req,
-                "available_days": len(available_days),
-                "min_days_needed": min_days_needed,
                 "available_capacity": available_capacity,
                 "feasible": False
             }
+            unschedulable_patients.append(p)
+
             if verbose:
-                boxed_print(issue)
-        else:
-            results["los_check"][p] = {
-                "requirements": req,
-                "available_days": len(available_days),
-                "min_days_needed": min_days_needed,
-                "available_capacity": available_capacity,
-                "feasible": True
-            }
-            if verbose:
-                boxed_print(f"Patient {p}: {req} treatments, {len(available_days)} days, "
-                      f"{available_capacity} slots - Feasible")
+                boxed_print(f"❌ {issue}", width=100, center=False)
 
-    # Note for Post-patients
-    if P_Post and verbose:
-        boxed_print(f"\n=== Note on Post-Patients ===")
-        boxed_print(f"Post-patients {P_Post} do not require discharge within the horizon. "
-              f"Only their entry day treatment is considered in demand.")
+    if unschedulable_patients and verbose:
+        boxed_print(f"⚠️  {len(unschedulable_patients)} Focus patients cannot be scheduled",
+                    width=100, center=False)
+    elif verbose:
+        boxed_print(f"✅ All {len(P_F)} Focus patients are potentially schedulable",
+                    width=100, center=False)
 
-    # 4. Check work cycle constraints
+    # ========================================================================
+    # FINAL SUMMARY
+    # ========================================================================
     if verbose:
-        boxed_print("\n=== Checking Work Cycle Constraints ===")
-    working_days = sum(1 for d in D_Full for t in T if Max_t.get((t, d), 0) > 0)
-    expected_working_days = len(D_Full) * len(T) * W_coeff
-    work_cycle_ratio = working_days / (len(D_Full) * len(T)) if len(D_Full) > 0 and len(T) > 0 else 0
-    results["work_cycle_check"] = {
-        "working_days": working_days,
-        "expected_working_days": expected_working_days,
-        "work_cycle_ratio": work_cycle_ratio,
-        "feasible": abs(work_cycle_ratio - W_coeff) < 0.1  # Allow 10% deviation
-    }
-    if abs(work_cycle_ratio - W_coeff) >= 0.1:
-        results["is_feasible"] = False
-        issue = (f"Work cycle ratio {work_cycle_ratio:.2f} deviates significantly from "
-                 f"expected {W_coeff:.2f}.")
-        results["issues"].append(issue)
-        if verbose:
-            boxed_print(issue)
-    else:
-        if verbose:
-            boxed_print(f"Work cycle ratio: {work_cycle_ratio:.2f}, Expected: {W_coeff:.2f} - Feasible")
-
-    # Final summary
-    if verbose:
-        boxed_print("\n=== Feasibility Summary ===")
-        boxed_print(f"Instance is {'feasible' if results['is_feasible'] else 'infeasible'}")
-        boxed_print(f"Pre-patients: {P_Pre}")
-        boxed_print(f"Focus-patients: {P_F}")
-        boxed_print(f"Post-patients: {P_Post}")
-        if not results["is_feasible"]:
-            boxed_print("Issues found:")
-            for issue in results["issues"]:
-                boxed_print(f"- {issue}")
+        boxed_print("\n" + "=" * 100, width=100, center=False, border="")
+        if results["is_feasible"]:
+            boxed_print("✅ INSTANCE IS FEASIBLE - All checks passed!", width=100, center=True)
         else:
-            boxed_print("No feasibility issues found.")
+            boxed_print("❌ INSTANCE IS INFEASIBLE", width=100, center=True)
+            boxed_print(f"\nFound {len(results['issues'])} critical issues:", width=100, center=False)
+            for idx, issue in enumerate(results["issues"], 1):
+                boxed_print(f"  {idx}. {issue}", width=100, center=False)
+        boxed_print("=" * 100, width=100, center=False, border="")
 
     return results["is_feasible"], results
 
-# Required categorize_patients function
+
+def repair_infeasible_instance(R_p, Entry_p, Max_t, feas_results, D_Full, T):
+    """
+    Attempts to repair an infeasible instance by adjusting capacity or entry days.
+
+    Strategy:
+    1. Identify bottleneck periods from feas_results
+    2. Try to shift patients to adjacent periods if possible
+    3. If shifting not possible, increase capacity at bottleneck periods
+
+    Parameters:
+    - R_p (dict): Patient requirements
+    - Entry_p (dict): Patient entry days
+    - Max_t (dict): Therapist capacity
+    - feas_results (dict): Results from feasibility check
+    - D_Full (list): Full planning horizon
+    - T (list): List of therapists
+
+    Returns:
+    - R_p (dict): Unchanged requirements
+    - Entry_p_repaired (dict): Potentially modified entry days
+    - Max_t_repaired (dict): Potentially modified capacity
+    """
+
+    boxed_print("🔧 ATTEMPTING AUTOMATIC INSTANCE REPAIR", width=100, center=True)
+
+    bottleneck_periods = feas_results.get("bottleneck_periods", [])
+
+    if not bottleneck_periods:
+        boxed_print("No bottlenecks detected - nothing to repair", width=100)
+        return R_p, Entry_p, Max_t
+
+    Max_t_repaired = Max_t.copy()
+    Entry_p_repaired = Entry_p.copy()
+
+    total_shifts = 0
+    total_capacity_added = 0
+
+    for d in bottleneck_periods:
+        analysis = feas_results["entry_day_analysis"][d]
+        deficit = analysis["deficit"]
+        patients_at_d = analysis["patients"]
+
+        boxed_print(f"\n📍 Repairing period {d} (deficit: {deficit}, patients: {len(patients_at_d)})",
+                    width=100, center=False)
+
+        # ====================================================================
+        # STRATEGY 1: Try to shift patients to adjacent periods
+        # ====================================================================
+        shifted = 0
+        shift_attempts = [(d - 1, "backward"), (d + 1, "forward")]
+
+        for p in patients_at_d[:deficit * 2]:  # Try shifting up to 2x deficit
+            if shifted >= deficit:
+                break
+
+            for shift_d, direction in shift_attempts:
+                if shift_d not in D_Full or shift_d < 1:
+                    continue
+
+                # Calculate current demand at shift_d
+                shift_capacity = sum(Max_t_repaired.get((t, shift_d), 0) for t in T)
+                shift_demand = sum(1 for pp in R_p if Entry_p_repaired.get(pp) == shift_d)
+
+                if shift_demand < shift_capacity:
+                    print(f"  ↔️  Shifting patient {p}: period {d} → {shift_d} ({direction})")
+                    Entry_p_repaired[p] = shift_d
+                    shifted += 1
+                    total_shifts += 1
+                    break
+
+        if shifted > 0:
+            print(f"  ✅ Successfully shifted {shifted} patients away from period {d}")
+
+        # ====================================================================
+        # STRATEGY 2: If shifting didn't solve it, increase capacity
+        # ====================================================================
+        remaining_deficit = deficit - shifted
+
+        if remaining_deficit > 0:
+            print(f"  ⚠️  Still {remaining_deficit} patients cannot be shifted")
+            print(f"  💡 Increasing capacity for period {d} by {remaining_deficit}")
+
+            # Distribute extra capacity across therapists (round-robin)
+            per_therapist = remaining_deficit // len(T)
+            remainder = remaining_deficit % len(T)
+
+            for idx, t in enumerate(T):
+                extra = per_therapist + (1 if idx < remainder else 0)
+                if extra > 0:
+                    old_cap = Max_t_repaired.get((t, d), 0)
+                    Max_t_repaired[(t, d)] = old_cap + extra
+                    print(f"     Therapist {t} at period {d}: {old_cap} → {old_cap + extra} (+{extra})")
+                    total_capacity_added += extra
+
+    # Summary
+    boxed_print("\n" + "=" * 100, width=100, center=False, border="")
+    boxed_print("REPAIR SUMMARY", width=100, center=True)
+    boxed_print(f"Patients shifted: {total_shifts}", width=100, center=False)
+    boxed_print(f"Capacity added: {total_capacity_added} slots", width=100, center=False)
+    boxed_print("=" * 100, width=100, center=False, border="")
+
+    return R_p, Entry_p_repaired, Max_t_repaired
+
+
 def categorize_patients(Entry_p, D):
     """
     Categorize patients into Pre, Focus, and Post groups based on entry days.
@@ -205,3 +298,12 @@ def categorize_patients(Entry_p, D):
     P_Post = [p for p, d in Entry_p.items() if d > max(D)]
     P_Join = sorted(P_F + P_Post)
     return P_Pre, P_F, P_Post, P_Join
+
+
+# Keep the original function for backward compatibility
+def check_instance_feasibility(R_p, Entry_p, Max_t, P, D, D_Full, T, W_coeff, app_data, verbose=True):
+    """
+    Original function - redirects to extended version.
+    Kept for backward compatibility.
+    """
+    return check_instance_feasibility_extended(R_p, Entry_p, Max_t, P, D, D_Full, T, W_coeff, verbose)
