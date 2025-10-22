@@ -1,3 +1,4 @@
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -801,5 +802,77 @@ def generate_patient_data_log(T=10, D_focus=30, W_on=5, W_off=2, daily=4, pttr_s
 
     requirements_dict = df.set_index("patient_id")["requirements"].to_dict()
     entry_day_dict = df.set_index("patient_id")["entry_day"].to_dict()
+
+    requirements_dict = df.set_index("patient_id")["requirements"].to_dict()
+    entry_day_dict = df.set_index("patient_id")["entry_day"].to_dict()
+
+    # ============================================================================
+    # ✅ NEW: FEASIBILITY CHECK BEFORE RETURNING
+    # ============================================================================
+    from Utils.feasability_checker import check_instance_feasibility_extended, repair_infeasible_instance
+
+    print("\n" + "=" * 100)
+    print("PERFORMING INSTANCE FEASIBILITY CHECK".center(100))
+    print("=" * 100 + "\n")
+
+    is_feasible, feas_results = check_instance_feasibility_extended(
+        R_p=requirements_dict,
+        Entry_p=entry_day_dict,
+        Max_t=Max_t,
+        P=P,
+        D=D,
+        D_Full=D_full,
+        T=list(range(1, T + 1)),
+        W_coeff=W_coeff,
+        verbose=True
+    )
+
+    if not is_feasible:
+        print("\n" + "=" * 100)
+        print("⚠️  INSTANCE IS INFEASIBLE - ATTEMPTING AUTOMATIC REPAIR".center(100))
+        print("=" * 100 + "\n")
+
+        # Attempt automatic repair
+        requirements_dict, entry_day_dict, Max_t = repair_infeasible_instance(
+            requirements_dict,
+            entry_day_dict,
+            Max_t,
+            feas_results,
+            D_full,
+            list(range(1, T + 1))
+        )
+
+        # Re-check after repair
+        print("\n" + "=" * 100)
+        print("RE-CHECKING FEASIBILITY AFTER REPAIR".center(100))
+        print("=" * 100 + "\n")
+
+        is_feasible_after_repair, _ = check_instance_feasibility_extended(
+            requirements_dict, entry_day_dict, Max_t, P, D, D_full,
+            list(range(1, T + 1)), W_coeff, verbose=True
+        )
+
+        if not is_feasible_after_repair:
+            error_msg = (
+                    "\n" + "=" * 100 + "\n"
+                                       "❌ CRITICAL ERROR: Instance remains INFEASIBLE after automatic repair!\n"
+                                       "=" * 100 + "\n"
+                                                   "The generated instance cannot be solved even after attempting repairs.\n\n"
+                                                   "Possible solutions:\n"
+                                                   "  1. Increase number of therapists (T parameter)\n"
+                                                   "  2. Increase daily capacity per therapist (daily parameter)\n"
+                                                   "  3. Reduce patient-to-therapist ratio (lower pttr_scenario)\n"
+                                                   "  4. Use different random seed\n"
+                                                   "=" * 100
+            )
+            raise ValueError(error_msg)
+        else:
+            print("\n" + "=" * 100)
+            print("✅ INSTANCE SUCCESSFULLY REPAIRED AND IS NOW FEASIBLE!".center(100))
+            print("=" * 100 + "\n")
+    else:
+        print("\n" + "=" * 100)
+        print("✅ INSTANCE IS FEASIBLE - PROCEEDING WITH OPTIMIZATION".center(100))
+        print("=" * 100 + "\n")
 
     return requirements_dict, entry_day_dict, Max_t, P, D, D_planning, D_full, list(range(1, T + 1)), M_p, W_coeff
