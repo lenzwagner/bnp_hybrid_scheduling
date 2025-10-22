@@ -1,3 +1,4 @@
+
 def initial_cg_starting_sol(max_capacity, patients, days, therapists, required_resources, entry_days, pre_assignments,
                             capacity_multipliers, flexible_patients, M_p, therapist_to_type = None):
     """
@@ -31,6 +32,100 @@ def initial_cg_starting_sol(max_capacity, patients, days, therapists, required_r
     - S: dictionary with keys (p, d) - cumulative sum of y up to day d for each patient p
     - l: dictionary with keys (p, d) - 1 on discharge day, 0 otherwise
     """
+    # ============================================================================
+    # ✅ NEW: FEASIBILITY PRE-CHECK
+    # ============================================================================
+    from collections import defaultdict
+
+    print("\n" + "=" * 100)
+    print("INITIAL COLUMN GENERATION: FEASIBILITY PRE-CHECK".center(100))
+    print("=" * 100 + "\n")
+
+    # Calculate entry day demand
+    entry_demand = defaultdict(int)
+    entry_patients_dict = defaultdict(list)
+
+    for p in patients:
+        entry_day = entry_days[p]
+        entry_demand[entry_day] += capacity_multipliers[p]
+        entry_patients_dict[entry_day].append(p)
+
+    # Calculate available capacity AFTER pre-assignments
+    capacity_copy = max_capacity.copy()
+
+    print("Accounting for pre-assignments...")
+    for (p, t, d), value in pre_assignments.items():
+        if d > 0:
+            if therapist_to_type and t in therapist_to_type:
+                j = therapist_to_type[t]
+                old_cap = capacity_copy.get((j, d), 0)
+                capacity_copy[(j, d)] = old_cap - value
+                if value > 0:
+                    print(f"  Pre-assigned: Patient {p}, Therapist {t}→Type {j}, Day {d}, Value {value} "
+                          f"(Capacity: {old_cap} → {capacity_copy[(j, d)]})")
+            else:
+                old_cap = capacity_copy.get((t, d), 0)
+                capacity_copy[(t, d)] = old_cap - value
+                if value > 0:
+                    print(f"  Pre-assigned: Patient {p}, Therapist {t}, Day {d}, Value {value} "
+                          f"(Capacity: {old_cap} → {capacity_copy[(t, d)]})")
+
+    print("\nChecking entry day feasibility...\n")
+
+    # Check feasibility
+    infeasible_periods = []
+    for d in sorted(entry_demand.keys()):
+        if d <= 0:
+            continue
+
+        demand = entry_demand[d]
+        available = sum(capacity_copy.get((t, d), 0) for t in therapists)
+        deficit = max(0, demand - available)
+
+        if demand > available:
+            print(f"❌ Period {d}: Demand={demand}, Available={available} (DEFICIT: {deficit})")
+            print(f"   Patients entering: {entry_patients_dict[d][:10]}"
+                  f"{'...' if len(entry_patients_dict[d]) > 10 else ''}")
+            infeasible_periods.append(d)
+        else:
+            slack = available - demand
+            status = "✅" if slack >= 2 else "⚠️ " if slack >= 1 else "🔥"
+            print(f"{status} Period {d}: Demand={demand}, Available={available} (slack: {slack})")
+
+    if infeasible_periods:
+        print("\n" + "=" * 100)
+        print("❌ CRITICAL: INITIAL COLUMN GENERATION IS INFEASIBLE!".center(100))
+        print("=" * 100)
+        print(f"\nInfeasible periods: {infeasible_periods}")
+        print("\nCannot generate valid initial columns!")
+        print("\nDETAILED ANALYSIS:")
+
+        for d in infeasible_periods:
+            print(f"\n  Period {d}:")
+            print(f"    Total demand: {entry_demand[d]}")
+            print(f"    Patients: {entry_patients_dict[d]}")
+            print(f"    Available capacity by therapist:")
+            for t in therapists:
+                cap = capacity_copy.get((t, d), 0)
+                print(f"      Therapist {t}: {cap}")
+
+        print("\n" + "=" * 100)
+        print("PLEASE FIX THE INSTANCE BEFORE RUNNING OPTIMIZATION!")
+        print("=" * 100 + "\n")
+
+        raise ValueError(
+            f"Initial column generation impossible: insufficient capacity at periods {infeasible_periods}\n"
+            f"Please adjust instance parameters before running optimization.\n"
+            f"Suggestions:\n"
+            f"  1. Increase therapist capacity at periods {infeasible_periods}\n"
+            f"  2. Re-generate instance with different seed or parameters\n"
+            f"  3. Reduce number of patients or shift entry days"
+        )
+
+    print("\n" + "=" * 100)
+    print("✅ FEASIBILITY CHECK PASSED - GENERATING INITIAL COLUMNS".center(100))
+    print("=" * 100 + "\n")
+
     result_dict = {}
     capacity_copy = max_capacity.copy()
     capacity = {(t, d): v for (t, d), v in capacity_copy.items() if d > 0}
