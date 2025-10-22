@@ -728,10 +728,18 @@ class BranchAndPrice:
                 lp_bound, is_integral, most_frac_info, node_lambdas = self.solve_node_with_cg(
                     current_node, max_cg_iterations=50
                 )
+                current_node.lp_bound = lp_bound
+                current_node.is_integral = is_integral
+                current_node.most_fractional_var = most_frac_info
+
+                print(f"   Node {current_node_id} solved: LP bound = {lp_bound:.6f}, "
+                      f"Integral = {is_integral}")
+
             except Exception as e:
                 print(f"❌ Error solving node {current_node_id}: {e}")
                 current_node.status = 'fathomed'
                 current_node.fathom_reason = 'error'
+                current_node.lp_bound = float('inf')
                 self.stats['nodes_fathomed'] += 1
                 continue
 
@@ -1149,8 +1157,8 @@ class BranchAndPrice:
             if right_child.lp_bound < float('inf'):
                 self.open_nodes.append((right_child.lp_bound, right_child.node_id))
         else:  # DFS
-            self.open_nodes.append(right_child.node_id)
             self.open_nodes.append(left_child.node_id)
+            self.open_nodes.append(right_child.node_id)
 
         # Update parent status
         parent_node.status = 'branched'
@@ -1303,7 +1311,7 @@ class BranchAndPrice:
                 # SAVE FIRST SP FOR BRANCHING PROFILE
                 if profile == branching_profile:
                     sp_filename = f"LPs/SPs/pricing/sp_node_{node.node_id}_profile_{profile}_iter{cg_iteration}.lp"
-                    sp.Model.write(sp_filename)
+                    #sp.Model.write(sp_filename)
                     print(f"    ✅ [SP Saved] First pricing SP for branching profile {profile}: {sp_filename}")
                 sp.solModel()
 
@@ -1344,6 +1352,7 @@ class BranchAndPrice:
         master.Model.write(f"LPs/MP/SOLs/mp_node_{node.node_id}.sol")
         is_integral, lp_obj, most_frac_info = master.check_fractionality()
 
+        print('Testo metsto', lp_obj)
         if is_integral:
             print(f"\n✅ INTEGRAL SOLUTION FOUND AT NODE {node.node_id}!")
             print(f"   LP Bound: {lp_obj:.6f}")
@@ -1450,7 +1459,6 @@ class BranchAndPrice:
                     if all(x == 0 for x in branching_coefs):
                         print(
                             f"      [Column with postive Chi {profile},{col_id}] Added {len(branching_coefs)} branching coefficients")
-                        sys.exit()
                     col_coefs = col_coefs + branching_coefs
                     print(
                         f"      [Column {profile},{col_id}] Added {len(branching_coefs)} branching coefficients")
@@ -1485,7 +1493,7 @@ class BranchAndPrice:
 
             # DEBUG EXIT
             if sp_branching_active and node.node_id > 0:
-                master.Model.write(f"LPs/MP/LPs/master_branch_node_{node.node_id}.lp")
+                #master.Model.write(f"LPs/MP/LPs/master_branch_node_{node.node_id}.lp")
 
                 # Show constraint details
                 for c in master.Model.getConstrs():
@@ -1556,10 +1564,11 @@ class BranchAndPrice:
         """
         Extract dual variables from SP branching constraints.
 
+        Returns dict: {(profile, agent, period): dual_value}
+
         According to Paper Eq. (branch:sub4):
-        - Left branch (≤): δ^L ≤ 0
-        - Right branch (≥): δ^R ≥ 0
-        - Both are ADDED in pricing: - sum(δ^L + δ^R)
+        - Duals are ADDED to the coefficient of x_{njt} in pricing objective
+        - Multiple constraints on same (j,t) → sum their duals
         """
         branching_duals = {}
 
@@ -1577,60 +1586,65 @@ class BranchAndPrice:
                 dual_val = constraint.master_constraint.Pi
                 sp_constraints_found += 1
 
-                # Validate dual sign (according to constraint direction)
-                if constraint.dir == 'left' and dual_val > 1e-6:
-                    print(f"      ⚠️  WARNING: Left branch (≤) has positive dual: {dual_val:.6f}")
-                if constraint.dir == 'right' and dual_val < -1e-6:
-                    print(f"      ⚠️  WARNING: Right branch (≥) has negative dual: {dual_val:.6f}")
+                # Key: (profile, agent, period) - WITHOUT level!
+                key = (constraint.profile, constraint.agent, constraint.period)
 
-                # Store with unique key (profile, agent, period, level)
-                key = (constraint.profile, constraint.agent, constraint.period, constraint.level)
-                branching_duals[key] = dual_val
-
-                print(f"      [Dual] Level {constraint.level:2d} ({constraint.dir:5s}): "
-                            f"x[{constraint.profile},{constraint.agent:2d},{constraint.period:2d}] "
-                            f"→ π={dual_val:+.6f}")
+                # ✅ CRITICAL: Sum all duals for the same (n,j,t)
+                # Multiple branching decisions on same assignment → accumulate duals
+                if key in branching_duals:
+                    branching_duals[key] += dual_val
+                    print(f"      [Dual] Accumulated for {key}: {branching_duals[key]:+.6f} "
+                          f"(added {dual_val:+.6f} from level {constraint.level})")
+                else:
+                    branching_duals[key] = dual_val
+                    print(f"      [Dual] Level {constraint.level:2d} ({constraint.dir:5s}): "
+                          f"x[{constraint.profile},{constraint.agent:2d},{constraint.period:2d}] "
+                          f"→ δ={dual_val:+.6f}")
 
             except Exception as e:
                 print(f"      ⚠️  Could not extract dual from constraint: {e}")
 
-        print(f"      Found {sp_constraints_found} SP branching duals\n")
+        print(f"      Found {sp_constraints_found} SP branching constraints")
+        print(f"      Unique (j,t) combinations with duals: {len(branching_duals)}\n")
+
         return branching_duals
 
     def _build_subproblem_for_node(self, profile, node, duals_pi, duals_gamma, branching_duals=None):
         """
         Build subproblem for a profile at a node with branching constraints.
 
-        Uses node-local column IDs and REAL duals from master LP.
+        Branching duals are passed as dict: {(profile, agent, period): dual_value}
+        These are added directly to the coefficient of x_{njt} in the objective.
 
         Args:
             profile: Profile index
             node: BnPNode
-            duals_pi: Dual variables for capacity constraints
-            duals_gamma: Dual variables for profile constraints
-            branching_duals: Dict of branching constraint duals (for SP-branching)
+            duals_pi: Dual variables for capacity constraints (dict: (j,t) -> value)
+            duals_gamma: Dual variables for profile constraints (dict: profile -> value)
+            branching_duals: Dict of branching constraint duals {(n,j,t): dual_value}
 
         Returns:
-            Subproblem: Subproblem with constraints
+            Subproblem: Subproblem with constraints and modified objective
         """
         from subproblem import Subproblem
 
         if branching_duals is None:
             branching_duals = {}
 
-        # Filter relevant branching duals for this profile
-        relevant_duals = {key: value for key, value in branching_duals.items() if key[0] == profile}
+        # ✅ Filter relevant branching duals for this profile
+        # Key format: (profile, agent, period)
+        relevant_duals = {
+            (j, t): dual_val
+            for (p, j, t), dual_val in branching_duals.items()
+            if p == profile
+        }
 
         if relevant_duals:
-            duals_delta = sum(relevant_duals.values())
-
-            # Detailed logging
-            print(f"\n      [SP Duals] Profile {profile} has {len(relevant_duals)} branching duals:")
-            for (p, j, t, level), dual_val in relevant_duals.items():
-                print(f"         Level {level}: x[{p},{j},{t}] → dual={dual_val:.6f}")
-            print(f"      [SP Duals] Total duals_delta = {duals_delta:.6f}\n")
+            print(f"\n      [SP Duals] Profile {profile} has branching duals for {len(relevant_duals)} (j,t) pairs:")
+            for (j, t), dual_val in sorted(relevant_duals.items()):
+                print(f"         x[{profile},{j:2d},{t:2d}] → δ={dual_val:+.6f}")
+            print()
         else:
-            duals_delta = 0.0
             print(f"      [SP Duals] Profile {profile} has NO branching constraints\n")
 
         # Determine next col_id based on column_pool of this node
@@ -1641,12 +1655,12 @@ class BranchAndPrice:
         else:
             next_col_id = 1
 
-        # Create subproblem mit echten Duals
+        # ✅ Create subproblem with branching duals (NOT as constant!)
         sp = Subproblem(
             self.cg_solver.data,
             duals_gamma,
             duals_pi,
-            duals_delta,
+            relevant_duals,  # ✅ Pass dict {(j,t): dual}, not scalar!
             profile,
             next_col_id,
             self.cg_solver.Req_agg,
@@ -1663,7 +1677,7 @@ class BranchAndPrice:
 
         sp.buildModel()
 
-        # Apply all branching constraints
+        # Apply all branching constraints (fix variables)
         for constraint in node.branching_constraints:
             constraint.apply_to_subproblem(sp)
 
@@ -1858,9 +1872,8 @@ class BranchAndPrice:
             if right_child.lp_bound < float('inf'):
                 self.open_nodes.append((right_child.lp_bound, right_child.node_id))
         else:  # DFS
-            # Add to open nodes (DFS: right first, then left, so left is processed first)
-            self.open_nodes.append(right_child.node_id)
             self.open_nodes.append(left_child.node_id)
+            self.open_nodes.append(right_child.node_id)
 
         parent_node.status = 'branched'
 

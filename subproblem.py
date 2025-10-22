@@ -27,13 +27,27 @@ class Subproblem:
         self.T = df['T'].dropna().astype(int).unique().tolist()
         self.duals_gamma = duals_gamma
         self.duals_pi = duals_pi
-        self.duals_delta = duals_delta
+
+        # ✅ CRITICAL CHANGE: duals_delta is now a DICT, not a scalar!
+        # Format: {(j, t): dual_value}
+        if isinstance(duals_delta, dict):
+            self.duals_delta = duals_delta
+        else:
+            # Backward compatibility: if scalar passed, convert to empty dict
+            self.duals_delta = {}
+            if duals_delta != 0:
+                print(f"⚠️  WARNING: duals_delta passed as scalar ({duals_delta}), should be dict!")
+
         self.Model = gu.Model("Subproblem")
         self.M = max(self.D) + 1
         self.S_Bound = S_Bound[self.P]
         self.R = list(range(1, 1 + self.S_Bound))
-        if self.duals_delta != 0:
-            print(f'Duals for {self.P} in itr. {self.itr}: {self.duals_delta, self.duals_gamma}')
+
+        # Debug output
+        if self.duals_delta:
+            print(f'      [SP Init] Branching duals for profile {self.P}:')
+            for (j, t), dual in self.duals_delta.items():
+                print(f'         x[{self.P},{j},{t}] → δ={dual:+.6f}')
 
     def _init_day_horizon(self):
         """Initialize the day horizon with optional reduction."""
@@ -507,14 +521,51 @@ class Subproblem:
         )
 
     def genObj(self):
-        """Generate objective function."""
-        self.Model.setObjective(
-            self.E[self.P] * self.LOS[self.P, self.col_id] -
-            gu.quicksum(self.x[self.P, t, d, self.col_id] * self.duals_pi[t, d]
-                        for t in self.T for d in self.D) -
-            self.duals_gamma[self.P] - self.duals_delta,
-            sense=gu.GRB.MINIMIZE
-        )
+        """
+        Generate objective function with branching duals.
+
+        Standard objective (Paper Eq. sp:objective):
+            min: F_n - sum_{j,t} π_{jt} * x_{njt} - γ_n
+
+        With SP-branching (Paper Eq. branch:sub4):
+            min: F_n - sum_{j,t} (π_{jt} + δ_{njt}) * x_{njt} - γ_n
+
+        Where δ_{njt} = sum of all branching duals for (n,j,t)
+        """
+        p = self.P
+
+        # Base objective: LOS cost
+        obj_expr = self.E[p] * self.LOS[p, self.col_id]
+
+        # Subtract capacity duals (standard CG)
+        for t in self.T:
+            for d in self.D:
+                pi_td = self.duals_pi.get((t, d), 0.0)
+
+                # ✅ Add branching dual if exists for this (j=t, d)
+                # Note: In your model, 't' is the therapist/agent index
+                delta_td = self.duals_delta.get((t, d), 0.0)
+
+                # Combined coefficient for x_{ptd}
+                combined_coef = pi_td + delta_td
+
+                obj_expr -= self.x[p, t, d, self.col_id] * combined_coef
+
+                # Debug: Show modification
+                if delta_td != 0:
+                    print(f"         [Obj Coef] x[{p},{t},{d}]: "
+                          f"π={pi_td:+.6f}, δ={delta_td:+.6f}, "
+                          f"combined={combined_coef:+.6f}")
+
+        # Subtract profile dual (standard CG)
+        obj_expr -= self.duals_gamma[p]
+
+        self.Model.setObjective(obj_expr, sense=gu.GRB.MINIMIZE)
+
+        # Summary
+        if self.duals_delta:
+            total_delta = sum(self.duals_delta.values())
+            print(f"      [Objective] Total branching dual adjustment: {total_delta:+.6f}")
 
     def getOptVals(self, var_name):
         """Get optimal values for a variable."""

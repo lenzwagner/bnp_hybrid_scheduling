@@ -404,7 +404,7 @@ class ColumnGeneration:
         """
         Solve subproblems in parallel using multiprocessing.
         """
-        duals_delta = 0
+        duals_delta = {}
         node_path = ''  # Root node
 
         tasks_args = [
