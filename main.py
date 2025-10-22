@@ -26,7 +26,7 @@ def main():
     # ===========================
 
     # Random seed
-    seed = 14
+    seed = 92
 
     # Learning parameters
     app_data = {
