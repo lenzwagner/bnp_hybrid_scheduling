@@ -1232,11 +1232,11 @@ class BranchAndPrice:
 
     def solve_node_with_cg(self, node, max_cg_iterations=100):
         """
-        Solve a node using Column Generation with branching constraints.
+        Solve a node using Column Generation with PARALLEL branching constraints.
 
         This performs full CG at a node:
         1. Build master with inherited columns + branching constraints
-        2. CG loop: solve LP, get duals, price subproblems, add columns
+        2. CG loop: solve LP, get duals, price subproblems IN PARALLEL, add columns
         3. Check integrality
         4. Return LP bound
 
@@ -1245,7 +1245,7 @@ class BranchAndPrice:
             max_cg_iterations: Maximum CG iterations at this node
 
         Returns:
-            tuple: (lp_bound, is_integral, most_frac_info)
+            tuple: (lp_bound, is_integral, most_frac_info, lambda_dict)
         """
         self.logger.info(f"\n{'─' * 100}")
         self.logger.info(f" SOLVING NODE {node.node_id} (path: '{node.path}', depth {node.depth}) ".center(100, "─"))
@@ -1260,22 +1260,22 @@ class BranchAndPrice:
         self.logger.info(f"Columns per profile (sample): {dict(list(cols_per_profile.items())[:3])}")
         self.logger.info(f"{'─' * 100}\n")
 
-        # 1. Build master problem and save LP for this node
+        # ========================================================================
+        # 1. BUILD MASTER PROBLEM
+        # ========================================================================
         master = self._build_master_for_node(node)
         master.Model.update()
 
-
-        # Determine branching profile (from constraints)
+        # Determine branching profile (for debugging/saving SPs)
         branching_profile = self._get_branching_profile(node)
         if branching_profile:
             self.logger.info(f"    [SP Saving] Branching profile: {branching_profile}")
 
-        # 2. Column Generation loop
-        threshold = self.cg_solver.threshold  # Use same threshold as CG
+        # ========================================================================
+        # 2. COLUMN GENERATION LOOP WITH PARALLEL SUBPROBLEM SOLVING
+        # ========================================================================
+        threshold = self.cg_solver.threshold
         cg_iteration = 0
-
-        # Track SP solutions for warmstart within this node
-        sp_warmstart_cache = {}
 
         # Node time limit
         node_start_time = time.time()
@@ -1295,93 +1295,162 @@ class BranchAndPrice:
 
             self.logger.info(f"    [CG Iter {cg_iteration}] Solving master LP...")
 
-            # Solve master as LP
+            # ====================================================================
+            # 2a. SOLVE MASTER AS LP
+            # ====================================================================
             master.solRelModel()
             if master.Model.status != 2:  # GRB.OPTIMAL
-                self.logger.warning(f"    ⚠️  Master in CG-iterations infeasible or unbounded at node {node.node_id}")
+                self.logger.warning(f"    ⚠️  Master infeasible or unbounded at node {node.node_id}")
                 return float('inf'), False, None, {}
 
             current_lp_obj = master.Model.objVal
             self.logger.info(f"    [CG Iter {cg_iteration}] LP objective: {current_lp_obj:.6f}")
 
-            # Get duals from master
+            # ====================================================================
+            # 2b. GET DUALS FROM MASTER
+            # ====================================================================
             duals_pi, duals_gamma = master.getDuals()
-            self.logger.info(self.branching_strategy)
 
             # Get branching constraint duals if SP-branching is used
             branching_duals = {}
             if self.branching_strategy == 'sp':
                 branching_duals = self._get_branching_constraint_duals(master, node)
 
-            # 3. Solve subproblems for all profiles
+            # ====================================================================
+            # 2c. PREPARE PARALLEL SUBPROBLEM TASKS
+            # ====================================================================
+
+            self.logger.info(f"    [CG Iter {cg_iteration}] Preparing {len(self.cg_solver.P_Join)} subproblem tasks...")
+
+            tasks_args = []
+
+            for profile in self.cg_solver.P_Join:
+                # Determine next column ID for this profile
+                profile_columns = [col_id for (p, col_id) in node.column_pool.keys()
+                                   if p == profile]
+                next_col_id = max(profile_columns) + 1 if profile_columns else 1
+
+                # Serialize branching constraints (make them pickle-compatible)
+                serializable_constraints = []
+                for constraint in node.branching_constraints:
+                    constraint_data = {
+                        'type': type(constraint).__name__,
+                        'profile': constraint.profile,
+                    }
+
+                    if hasattr(constraint, 'agent'):
+                        # SP Variable Branching
+                        constraint_data['agent'] = constraint.agent
+                        constraint_data['period'] = constraint.period
+                        constraint_data['dir'] = constraint.dir
+                        constraint_data['level'] = constraint.level
+
+                    elif hasattr(constraint, 'column'):
+                        # MP Variable Branching
+                        constraint_data['column'] = constraint.column
+                        constraint_data['bound'] = constraint.bound
+                        constraint_data['direction'] = constraint.direction
+                        constraint_data['original_schedule'] = constraint.original_schedule
+
+                    serializable_constraints.append(constraint_data)
+
+                # Create task tuple (all pickle-compatible!)
+                task = (
+                    profile,
+                    node.path,
+                    serializable_constraints,
+                    duals_gamma,
+                    duals_pi,
+                    branching_duals,
+                    next_col_id,
+                    self.cg_solver.data,
+                    self.cg_solver.Req_agg,
+                    self.cg_solver.Entry_agg,
+                    self.cg_solver.app_data,
+                    self.cg_solver.W_coeff,
+                    self.cg_solver.E_dict,
+                    self.cg_solver.S_Bound,
+                    self.cg_solver.learn_method,
+                    threshold,
+                    branching_profile,  # For saving SP files
+                    cg_iteration,
+                    node.node_id
+                )
+                tasks_args.append(task)
+
+            # ====================================================================
+            # 2d. SOLVE SUBPROBLEMS IN PARALLEL
+            # ====================================================================
+
+            import multiprocessing
+
+            self.logger.info(
+                f"    [CG Iter {cg_iteration}] Solving subproblems on {multiprocessing.cpu_count()} cores...")
+
+            subproblem_start_time = time.time()
+
+            with multiprocessing.Pool() as pool:
+                results = pool.map(solve_subproblem_for_child_node, tasks_args)
+
+            subproblem_time = time.time() - subproblem_start_time
+
+            # Extract worker runtimes
+            worker_runtimes = [runtime for _, runtime in results]
+
+            self.logger.info(f"    [CG Iter {cg_iteration}] Subproblems solved in {subproblem_time:.2f}s")
+            self.logger.info(f"                             Min: {min(worker_runtimes):.2f}s, "
+                             f"Max: {max(worker_runtimes):.2f}s, "
+                             f"Avg: {sum(worker_runtimes) / len(worker_runtimes):.2f}s")
+
+            # ====================================================================
+            # 2e. PROCESS RESULTS AND ADD COLUMNS TO MASTER
+            # ====================================================================
+
             new_columns_found = False
             columns_added_this_iter = 0
 
-            for profile in self.cg_solver.P_Join:
-                warmstart_solution = None
-                if self.use_warmstart and profile in sp_warmstart_cache:
-                    warmstart_solution = sp_warmstart_cache[profile]
-                    print(f"\n🔍 [DEBUG] Using warmstart for profile {profile}")
-                    print(f"    Cache keys: {list(warmstart_solution.keys())}")
-                    print(f"    Sample x values: {list(warmstart_solution.get('x', {}).items())[:3]}")
-                else:
-                    print(f"\n🔍 [DEBUG] NO warmstart for profile {profile}")
-                    print(f"    use_warmstart: {self.use_warmstart}")
-                    print(f"    profile in cache: {profile in sp_warmstart_cache}")
-                    print(f"    cache size: {len(sp_warmstart_cache)}")
+            for column_data, worker_time in results:
+                if column_data is not None:
+                    profile = column_data['index']
+                    col_id = column_data['column_id']
 
-                # Build and solve subproblem with branching constraints
-                sp = self._build_subproblem_for_node(
-                    profile, node, duals_pi, duals_gamma, branching_duals
-                )
-                # SAVE FIRST SP FOR BRANCHING PROFILE
-                if profile == branching_profile:
-                    sp_filename = f"LPs/SPs/pricing/sp_node_{node.node_id}_profile_{profile}_iter{cg_iteration}.lp"
-                    sp.Model.write(sp_filename)
-                    self.logger.info(f"    ✅ [SP Saved] First pricing SP for branching profile {profile}: {sp_filename}")
-                sp.solModel()
+                    self.logger.info(f"        [Column] Profile {profile}, col {col_id}: "
+                                     f"reduced cost = {column_data['reduced_cost']:.6f}")
 
-                # Check reduced cost
-                if sp.Model.status == 2 and sp.Model.objVal < -threshold:
-                    self.logger.info(f'Red. cost for profile {profile} : {sp.Model.objVal}')
+                    # Add column to node's pool
+                    node.column_pool[(profile, col_id)] = column_data
 
-                    # Extract and cache solution for next iteration
-                    sp_solution = self._extract_sp_solution(sp)
-                    sp_warmstart_cache[profile] = sp_solution
+                    # Add column to master problem
+                    self._add_column_to_master_from_data(column_data, master, node)
 
-                    # Track warmstart statistics
-                    if warmstart_solution is not None:
-                        ws_stats = sp.get_warmstart_statistics()
-                        if ws_stats['applied']:
-                            self.warmstart_stats['successful_warmstarts'] += 1
-                            self.warmstart_stats['variables_warmed'] += ws_stats['variables_set']
-
-
-                    # Add column to node and master
-                    self._add_column_from_subproblem(sp, profile, node, master)
                     new_columns_found = True
                     columns_added_this_iter += 1
-                    master.Model.update()
 
             self.logger.info(f"    [CG Iter {cg_iteration}] Added {columns_added_this_iter} new columns")
 
-            # Check convergence
+            # ====================================================================
+            # 2f. CHECK CONVERGENCE
+            # ====================================================================
+
             if not new_columns_found:
                 self.logger.info(f"    [CG] Converged after {cg_iteration} iterations - no improving columns found")
                 break
+
             master.Model.update()
 
-        node.sp_warmstart_cache = sp_warmstart_cache
+        # ========================================================================
+        # 3. FINAL LP SOLVE AND INTEGRALITY CHECK
+        # ========================================================================
 
-
-        # 4. Final LP solve and integrality check
         self.logger.info(f"\n    [Node {node.node_id}] Final LP solve...")
-        master.Model.write(f"LPs/MP/LPs/mp_final_{node.node_id}.lp")
+        master.Model.write(f"LPs/MP/LPs/mp_final_node_{node.node_id}.lp")
         master.solRelModel()
+
         if master.Model.status != 2:  # GRB.OPTIMAL
             self.logger.warning(f"    ⚠️  Final Master infeasible or unbounded at node {node.node_id}")
             return float('inf'), False, None, {}
 
+        # Extract lambda values
         if master.Model.status == 2:
             lambda_list_cg = {
                 key: var.X for key, var in master.lmbda.items()
@@ -1390,13 +1459,18 @@ class BranchAndPrice:
             lambda_list_cg = {}
 
         master.Model.write(f"LPs/MP/SOLs/mp_node_{node.node_id}.sol")
+
+        # Check integrality
         is_integral, lp_obj, most_frac_info = master.check_fractionality()
 
         if is_integral:
             self.logger.info(f"\n✅ INTEGRAL SOLUTION FOUND AT NODE {node.node_id}!")
             self.logger.info(f"   LP Bound: {lp_obj:.6f}")
 
-        # Store results in node
+        # ========================================================================
+        # 4. STORE RESULTS IN NODE
+        # ========================================================================
+
         node.lp_bound = lp_obj
         node.is_integral = is_integral
         node.most_fractional_var = most_frac_info
@@ -1415,6 +1489,75 @@ class BranchAndPrice:
         self.stats['total_cg_iterations'] += cg_iteration
 
         return lp_obj, is_integral, most_frac_info, lambda_list_cg
+
+    def _add_column_to_master_from_data(self, column_data, master, node):
+        """
+        Add a column to the master problem from parallel worker result.
+
+        Args:
+            column_data: Dictionary with column information from worker
+            master: MasterProblem_d instance
+            node: BnPNode instance
+        """
+        profile = column_data['index']
+        col_id = column_data['column_id']
+
+        # Extract schedules
+        schedules_x = column_data['schedules_x']
+        schedules_los = column_data['schedules_los']
+        x_list = column_data['x_list']
+        los_list = column_data['los_list']
+
+        # Add to master
+        master.addSchedule(schedules_x)
+        master.addLOS(schedules_los)
+
+        # Create coefficient lists
+        lambda_list = self._create_lambda_list(profile)
+
+        # Basic coefficients
+        col_coefs = lambda_list + x_list
+
+        # ========================================================================
+        # ADD SP-BRANCHING COEFFICIENTS IF NEEDED
+        # ========================================================================
+        sp_branching_constraints = [c for c in node.branching_constraints
+                                    if hasattr(c, 'master_constraint')
+                                    and c.master_constraint is not None]
+
+        if sp_branching_constraints:
+            branching_coefs = self._compute_branching_coefficients_for_column(
+                column_data, profile, col_id, node.branching_constraints
+            )
+            col_coefs = col_coefs + branching_coefs
+
+            self.logger.info(f"        [Column] Added {len(branching_coefs)} branching coefficients "
+                             f"for new column ({profile}, {col_id})")
+
+        # Verify length
+        expected_length = len(master.Model.getConstrs())
+        actual_length = len(col_coefs)
+
+        if actual_length != expected_length:
+            self.logger.error(f"        ❌ ERROR: Coefficient mismatch when adding new column!")
+            self.logger.error(f"           Expected: {expected_length}, Got: {actual_length}")
+            raise ValueError("Coefficient vector length mismatch!")
+
+        # Adjust los_list for post patients
+        if profile in master.P_Post:
+            los_list_adjusted = [0]
+        else:
+            los_list_adjusted = los_list
+
+        # Add variable to master
+        master.addLambdaVar(
+            profile, col_id,
+            col_coefs,
+            los_list_adjusted
+        )
+
+        self.logger.info(f"        [Column] Successfully added column ({profile}, {col_id})")
+
 
     def _build_master_for_node(self, node):
         """
@@ -2830,3 +2973,164 @@ class BranchAndPrice:
             filtered_cache[profile] = filtered_solution
 
         return filtered_cache
+
+
+# ============================================================================
+# WORKER FUNCTION FOR PARALLEL SUBPROBLEM SOLVING IN CHILD NODES
+# Must be defined at module level (outside class) for pickle compatibility!
+# ============================================================================
+
+def solve_subproblem_for_child_node(args):
+    """
+    Worker function: Solves subproblem for a child node with branching constraints.
+
+    This function is called in parallel via multiprocessing.Pool.map().
+    It must be at module level (not inside a class) to be pickle-compatible.
+
+    Args:
+        args: Tuple containing all necessary data (must be pickle-compatible!)
+              (profile, node_path, serializable_constraints, duals_gamma, duals_pi,
+               branching_duals, next_col_id, data, Req_agg, Entry_agg, app_data,
+               W_coeff, E_dict, S_Bound, learn_method, threshold,
+               branching_profile, cg_iteration, node_id)
+
+    Returns:
+        tuple: (column_data, worker_runtime)
+               - column_data: Dict with column info, or None if no improving column
+               - worker_runtime: Time spent by this worker (float)
+    """
+    import time
+    from subproblem import Subproblem
+    import gurobipy as gp
+
+    worker_start_time = time.time()
+
+    # ========================================================================
+    # UNPACK ARGUMENTS
+    # ========================================================================
+    (profile, node_path, serializable_constraints, duals_gamma, duals_pi,
+     branching_duals, next_col_id, data, Req_agg, Entry_agg, app_data,
+     W_coeff, E_dict, S_Bound, learn_method, threshold,
+     branching_profile, cg_iteration, node_id) = args
+
+    # ========================================================================
+    # COMPUTE BRANCHING DUALS
+    # ========================================================================
+    relevant_duals = {key: value for key, value in branching_duals.items()
+                      if key[0] == profile}
+    duals_delta = sum(relevant_duals.values()) if relevant_duals else 0.0
+
+    # ========================================================================
+    # CREATE SUBPROBLEM
+    # ========================================================================
+    sp = Subproblem(
+        data, duals_gamma, duals_pi, duals_delta,
+        profile, next_col_id, Req_agg, Entry_agg,
+        app_data, W_coeff, E_dict, S_Bound,
+        learn_method=learn_method,
+        reduction=True,
+        num_tangents=10,
+        node_path=node_path
+    )
+
+    sp.buildModel()
+
+    # ========================================================================
+    # APPLY BRANCHING CONSTRAINTS
+    # ========================================================================
+    for constraint_data in serializable_constraints:
+        # Reconstruct constraint object from serialized data
+        constraint = _reconstruct_constraint_from_serialized_data(constraint_data)
+        constraint.apply_to_subproblem(sp)
+
+    sp.Model.update()
+
+    # ========================================================================
+    # SAVE FIRST SP FOR BRANCHING PROFILE (DEBUGGING)
+    # ========================================================================
+    if profile == branching_profile and cg_iteration == 1:
+        sp_filename = f"LPs/SPs/pricing/sp_node_{node_id}_profile_{profile}_iter{cg_iteration}.lp"
+        sp.Model.write(sp_filename)
+
+    # ========================================================================
+    # SOLVE SUBPROBLEM
+    # ========================================================================
+    sp.Model.Params.PoolSearchMode = 0  # Only find one best solution per worker
+    sp.Model.Params.OutputFlag = 0
+    sp.solModel()
+
+    # ========================================================================
+    # EXTRACT SOLUTION IF PROFITABLE
+    # ========================================================================
+    if sp.Model.status == 2 and sp.Model.objVal < -threshold:
+        # Extract schedules
+        schedules_x, x_list, _ = sp.getOptVals('x')
+        schedules_los, los_list, _ = sp.getOptVals('LOS')
+
+        # Extract all solution variables
+        solution_vars = {
+            var: sp.getVarSol(var, 0)
+            for var in ['x', 'LOS', 'y', 'z', 'S', 'l']
+        }
+
+        if app_data["learn_type"][0] in ['exp', 'sigmoid', 'lin']:
+            solution_vars['App'] = sp.getVarSol('App', 0)
+
+        # Create column data dictionary
+        column_data = {
+            'index': profile,
+            'column_id': next_col_id,
+            'schedules_x': schedules_x,
+            'schedules_los': schedules_los,
+            'x_list': x_list,
+            'los_list': los_list,
+            'reduced_cost': sp.Model.objVal,
+            'solution_vars': solution_vars
+        }
+
+        worker_end_time = time.time()
+        return (column_data, worker_end_time - worker_start_time)
+
+    # No improving column found
+    worker_end_time = time.time()
+    return (None, worker_end_time - worker_start_time)
+
+
+def _reconstruct_constraint_from_serialized_data(constraint_data):
+    """
+    Reconstruct BranchingConstraint object from serialized data.
+
+    This helper function must be at module level for pickle compatibility.
+
+    Args:
+        constraint_data: Dict with constraint attributes
+
+    Returns:
+        BranchingConstraint: Reconstructed constraint object
+    """
+    from branching_constraints import SPVariableBranching, MPVariableBranching
+
+    constraint_type = constraint_data['type']
+
+    if constraint_type == 'SPVariableBranching':
+        return SPVariableBranching(
+            profile_n=constraint_data['profile'],
+            agent_j=constraint_data['agent'],
+            period_t=constraint_data['period'],
+            dir=constraint_data['dir'],
+            level=constraint_data['level'],
+            floor_val=0,  # Not needed for apply_to_subproblem()
+            ceil_val=0
+        )
+
+    elif constraint_type == 'MPVariableBranching':
+        return MPVariableBranching(
+            profile_n=constraint_data['profile'],
+            column_a=constraint_data['column'],
+            bound=constraint_data['bound'],
+            direction=constraint_data['direction'],
+            original_schedule=constraint_data.get('original_schedule')
+        )
+
+    else:
+        raise ValueError(f"Unknown constraint type: {constraint_type}")
