@@ -411,4 +411,4 @@ def initial_cg_starting_sol(max_capacity, patients, days, therapists, required_r
     else:
         print("\n*** ALL patients were scheduled on their entry day! ***")
 
-    return result_dict, length_of_stay, y, z, App, S, l, remaining_capacity_td, remaining_capacity_dd
+    return result_dict, length_of_stay, y, z, App, S, l, remaining_capacity_td, remaining_capacity_d
