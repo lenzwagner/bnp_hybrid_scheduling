@@ -2,9 +2,8 @@ import gurobipy as gu
 import math
 from Utils.Generell.utils import *
 
-
 class Subproblem:
-    def __init__(self, df, duals_p, duals_td, p, col_id, Req, Entry, app_data, W_coeff, E_dict, S_Bound,
+    def __init__(self, df, duals_gamma, duals_pi, duals_delta, p, col_id, Req, Entry, app_data, W_coeff, E_dict, S_Bound,
                  learn_method,
                  reduction=False, num_tangents=10, node_path=''):
         self.reduction = reduction
@@ -26,13 +25,15 @@ class Subproblem:
         self._init_patient_sets(df)
 
         self.T = df['T'].dropna().astype(int).unique().tolist()
-        self.duals_p = duals_p
-        self.duals_td = duals_td
+        self.duals_gamma = duals_gamma
+        self.duals_pi = duals_pi
+        self.duals_delta = duals_delta
         self.Model = gu.Model("Subproblem")
         self.M = max(self.D) + 1
         self.S_Bound = S_Bound[self.P]
         self.R = list(range(1, 1 + self.S_Bound))
-        print(f'Duals for {self.P} in itr. {self.itr}: {self.duals_p,self.duals_td}')
+        if self.duals_delta != 0:
+            print(f'Duals for {self.P} in itr. {self.itr}: {self.duals_delta, self.duals_gamma}')
 
     def _init_day_horizon(self):
         """Initialize the day horizon with optional reduction."""
@@ -108,6 +109,16 @@ class Subproblem:
         return [i * Y_bound / (self.num_tangents - 1) for i in range(self.num_tangents)]
 
     def buildModel(self):
+        self.Model.Params.MIPGap = 0.05
+        self.Model.Params.MIPFocus = 1
+        self.Model.Params.Heuristics = 0.5
+        self.Model.Params.Cuts = 1
+        self.Model.Params.Presolve = 2
+        self.Model.Params.TimeLimit = 60
+        self.Model.Params.IntFeasTol = 1e-5
+        self.Model.Params.FeasibilityTol = 1e-6
+        self.Model.Params.IntegralityFocus = 0
+        self.Model.Params.OutputFlag = 0
         self.genVars()
         self.genCons()
         self.genLearnCons()
@@ -280,7 +291,7 @@ class Subproblem:
         k_learn = self.app_data["k_learn"][0]
         theta_base = self.app_data["theta_base"][0]
 
-        print(f'Using Approx: {learn_type}')
+        #print(f'Using Approx: {learn_type}')
 
         self.App = self.Model.addVars([self.P], self.D, vtype=gu.GRB.CONTINUOUS, lb=0, ub=1, name="App")
 
@@ -319,7 +330,7 @@ class Subproblem:
         k = self.app_data["k_learn"][0]
         theta_base = self.app_data["theta_base"][0]
 
-        print(f'Using PWL: {learn_type}')
+        #print(f'Using PWL: {learn_type}')
 
         self.h_eff = self.Model.addVars([self.P], self.D, vtype=gu.GRB.CONTINUOUS, lb=0, ub=1, name="h_eff")
         self.App = self.Model.addVars([self.P], self.D, vtype=gu.GRB.CONTINUOUS, lb=0, ub=1, name="App")
@@ -352,7 +363,7 @@ class Subproblem:
             self._add_bilinear_product_constraints(p, d)
 
             # Requirement fulfillment
-            self._add_requirement_constraint(p, d, use_heff=True)
+            self._add_requirement_constraint_with_heff(p, d)
 
     def _add_linearization_constraints(self):
         """Add exact linearization constraints for exponential/sigmoid learning."""
@@ -361,7 +372,7 @@ class Subproblem:
         theta_base = self.app_data["theta_base"][0]
         infl_point = self.app_data["infl_point"][0]
 
-        print(f'Using Linearization: {learn_type}')
+        #print(f'Using Linearization: {learn_type}')
 
         self.z_pdr = self.Model.addVars(
             [self.P], self.D, list(range(0, self.S_Bound + 1)),
@@ -469,24 +480,26 @@ class Subproblem:
             name=f"h_eff_lower_{p}_{d}"
         )
 
-    def _add_requirement_constraint(self, p, d, use_heff=False):
-        """
-        Add requirement fulfillment constraint.
-
-        Args:
-            p: Profile/patient index
-            d: Day
-            use_heff: If True, use h_eff (product of y and App), else use App directly
-        """
+    def _add_requirement_constraint(self, p, d):
+        """Add requirement fulfillment constraint using App directly."""
         sessions = gu.quicksum(
             gu.quicksum(self.x[p, t, j, self.col_id] for j in range(self.Entry[p], d + 1))
             for t in self.T
         )
+        learning_benefit = gu.quicksum(self.App[p, j] for j in range(self.Entry[p], d + 1))
 
-        if use_heff:
-            learning_benefit = gu.quicksum(self.h_eff[p, j] for j in range(self.Entry[p], d + 1))
-        else:
-            learning_benefit = gu.quicksum(self.App[p, j] for j in range(self.Entry[p], d + 1))
+        self.Model.addConstr(
+            self.l[p, d] * self.Req[p] <= sessions + learning_benefit,
+            name=f"requirement_{p}_{d}"
+        )
+
+    def _add_requirement_constraint_with_heff(self, p, d):
+        """Add requirement fulfillment constraint using h_eff."""
+        sessions = gu.quicksum(
+            gu.quicksum(self.x[p, t, j, self.col_id] for j in range(self.Entry[p], d + 1))
+            for t in self.T
+        )
+        learning_benefit = gu.quicksum(self.h_eff[p, j] for j in range(self.Entry[p], d + 1))
 
         self.Model.addConstr(
             self.l[p, d] * self.Req[p] <= sessions + learning_benefit,
@@ -497,9 +510,9 @@ class Subproblem:
         """Generate objective function."""
         self.Model.setObjective(
             self.E[self.P] * self.LOS[self.P, self.col_id] -
-            gu.quicksum(self.x[self.P, t, d, self.col_id] * self.duals_td[t, d]
+            gu.quicksum(self.x[self.P, t, d, self.col_id] * self.duals_pi[t, d]
                         for t in self.T for d in self.D) -
-            self.duals_p[self.P],
+            self.duals_gamma[self.P] - self.duals_delta,
             sense=gu.GRB.MINIMIZE
         )
 
@@ -578,18 +591,8 @@ class Subproblem:
 
     def solModel(self):
         """Solve the model."""
-        self.Model.Params.MIPGap = 0.05
-        self.Model.Params.MIPFocus = 1
-        self.Model.Params.Heuristics = 0.5
-        self.Model.Params.Cuts = 1
-        self.Model.Params.Presolve = 2
-        self.Model.Params.TimeLimit = 60
-        self.Model.Params.IntFeasTol = 1e-5
-        self.Model.Params.FeasibilityTol = 1e-6
-        self.Model.Params.IntegralityFocus = 0
-        self.Model.Params.OutputFlag = 0
-        self.Model.optimize()
 
+        self.Model.optimize()
         if self.Model.status == gu.GRB.INFEASIBLE:
             boxed_print('\nThe following constraints and variables are in the IIS:')
             self.Model.computeIIS()
