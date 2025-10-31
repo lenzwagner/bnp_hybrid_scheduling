@@ -217,9 +217,6 @@ class BranchAndPrice:
             # Store in node pool with the correct column_id
             node.column_pool[(p, col_id)] = col_data
 
-        print(node.column_pool[(55, 1)])
-        print('ÄÄÄ')
-
         # Store node
         self.nodes[0] = node
         if self.search_strategy == 'dfs':
