@@ -217,9 +217,6 @@ class BranchAndPrice:
             # Store in node pool with the correct column_id
             node.column_pool[(p, col_id)] = col_data
 
-        print(node.column_pool[(55, 1)])
-        print('ÄÄÄ')
-
         # Store node
         self.nodes[0] = node
         if self.search_strategy == 'dfs':
@@ -688,9 +685,11 @@ class BranchAndPrice:
             # SELECT NEXT NODE
             # ========================================
             if self.search_strategy == 'bfs':
-                # Sort by bound and select best
+                # Best-first: sort by bound (ascending) and pop the best (lowest bound)
+                # We sort descending and pop from the end for efficiency (O(1))
                 sorted_open_nodes = sorted(self.open_nodes, key=lambda x: x[0], reverse=True)
 
+                # Log the decision process
                 decision_log_entry = {
                     'iteration': iteration,
                     'open_nodes_state': copy.deepcopy(sorted_open_nodes),
@@ -700,11 +699,10 @@ class BranchAndPrice:
                 self.stats['bfs_decision_log'].append(decision_log_entry)
 
                 bound, current_node_id = sorted_open_nodes.pop()
-                self.open_nodes = sorted_open_nodes
+                self.open_nodes = sorted_open_nodes  # update the list
+                self.logger.info(f"   [BFS] Selected Node {current_node_id} with initial bound {bound:.4f}")
 
-                self.logger.info(f"   [BFS] Selected Node {current_node_id} with bound {bound:.4f}")
-
-            else:  # DFS
+            else:  # DFS (default)
                 current_node_id = self.open_nodes.pop()
 
             # Log the processing order for all strategies
@@ -727,7 +725,6 @@ class BranchAndPrice:
                 lp_bound, is_integral, most_frac_info, node_lambdas = self.solve_node_with_cg(
                     current_node, max_cg_iterations=50
                 )
-                current_node.lp_bound = lp_bound
             except Exception as e:
                 self.logger.error(f"❌ Error solving node {current_node_id}: {e}")
                 current_node.status = 'fathomed'
@@ -741,9 +738,6 @@ class BranchAndPrice:
             if lp_bound < self.best_lp_bound:
                 self.best_lp_bound = lp_bound
                 self.update_gap()
-
-            if self.search_strategy == 'bfs':
-                pass
 
             # ========================================
             # CHECK FATHOMING
@@ -1026,8 +1020,22 @@ class BranchAndPrice:
         return 'sp', best_candidate
 
     def branch_on_mp_variable(self, parent_node, branching_info):
-        """Branch on MP variable with immediate child evaluation for BFS."""
+        """
+        Branch on Master Problem Variable Lambda_{na}.
 
+        Creates two child nodes:
+        - Left:  Lambda_{na} <= floor(Lambda_hat)
+        - Right: Lambda_{na} >= ceil(Lambda_hat)
+
+        Paper Section 3.2.4, Equation (branch_mp1)
+
+        Args:
+            parent_node: BnPNode to branch from
+            branching_info: Dict with 'profile', 'column', 'value', 'floor', 'ceil'
+
+        Returns:
+            tuple: (left_child, right_child) - two new BnPNode objects
+        """
         n = branching_info['profile']
         a = branching_info['column']
         lambda_value = branching_info['value']
@@ -1038,14 +1046,29 @@ class BranchAndPrice:
         self.logger.info(f" BRANCHING ON MP VARIABLE ".center(100, "="))
         self.logger.info(f"{'=' * 100}")
         self.logger.info(f"Branching on Lambda[{n},{a}] = {lambda_value:.6f}")
+        self.logger.info(f"  Left:  Lambda[{n},{a}] <= {floor_val}")
+        self.logger.info(f"  Right: Lambda[{n},{a}] >= {ceil_val}")
 
         # Get original schedule for no-good cut
         original_schedule = None
         if (n, a) in parent_node.column_pool:
             original_schedule = parent_node.column_pool[(n, a)].get('schedules_x', {})
+            self.logger.info(f"\n  ✅ Found column ({n},{a}) in parent's column pool")
+            self.logger.info(f"     Schedule has {len(original_schedule)} assignments")
+
+            # Show first few assignments
+            if original_schedule:
+                sample_assignments = list(original_schedule.items())[:3]
+                for key, val in sample_assignments:
+                    self.logger.info(f"       {key}: {val}")
+        else:
+            self.logger.error(f"\n  ❌ ERROR: Column ({n},{a}) NOT found in parent's column pool!")
+            self.logger.error(
+                f"     Available columns for profile {n}: {[col_id for (p, col_id) in parent_node.column_pool.keys() if p == n]}")
+            self.logger.error(f"     No-good cut cannot be added!")
 
         # -------------------------
-        # CREATE LEFT CHILD
+        # LEFT CHILD
         # -------------------------
         self.node_counter += 1
         left_child = BnPNode(
@@ -1055,18 +1078,26 @@ class BranchAndPrice:
             path=parent_node.path + 'l'
         )
 
+        # Create left branching constraint
         from branching_constraints import MPVariableBranching
+
         left_constraint = MPVariableBranching(
-            profile_n=n, column_a=a, bound=floor_val,
-            direction='left', original_schedule=original_schedule
+            profile_n=n,
+            column_a=a,
+            bound=floor_val,
+            direction='left',
+            original_schedule=original_schedule
         )
 
+        # Inherit branching constraints from parent + add new one
         left_child.branching_constraints = parent_node.branching_constraints.copy()
         left_child.branching_constraints.append(left_constraint)
+
+        # Inherit compatible columns from parent
         self._inherit_columns_from_parent(left_child, parent_node)
 
         # -------------------------
-        # CREATE RIGHT CHILD
+        # RIGHT CHILD
         # -------------------------
         self.node_counter += 1
         right_child = BnPNode(
@@ -1076,90 +1107,58 @@ class BranchAndPrice:
             path=parent_node.path + 'r'
         )
 
+        # Create right branching constraint
         right_constraint = MPVariableBranching(
-            profile_n=n, column_a=a, bound=ceil_val, direction='right'
+            profile_n=n,
+            column_a=a,
+            bound=ceil_val,
+            direction='right'
         )
 
+        # Inherit branching constraints from parent + add new one
         right_child.branching_constraints = parent_node.branching_constraints.copy()
         right_child.branching_constraints.append(right_constraint)
+
+        # Inherit all columns (no restriction on right branch)
         self._inherit_columns_from_parent(right_child, parent_node)
 
         # -------------------------
-        # STORE NODES
+        # EVALUATE AND STORE NODES
         # -------------------------
+        if self.search_strategy == 'bfs':
+            # Solve initial LP to get a bound for node selection
+            self.logger.info("\n  [BFS] Evaluating child nodes...")
+            left_bound = self._solve_initial_lp(left_child)
+            right_bound = self._solve_initial_lp(right_child)
+            left_child.lp_bound = left_bound
+            right_child.lp_bound = right_bound
+            self.logger.info(f"    - Left Child (Node {left_child.node_id}) initial LP bound: {left_bound:.4f}")
+            self.logger.info(f"    - Right Child (Node {right_child.node_id}) initial LP bound: {right_bound:.4f}")
+
+        # Store nodes in the main dictionary
         self.nodes[left_child.node_id] = left_child
         self.nodes[right_child.node_id] = right_child
 
-        # -------------------------
-        # BFS: SOLVE BOTH CHILDREN IMMEDIATELY WITH FULL CG
-        # -------------------------
+        # Add to open nodes list based on the search strategy
         if self.search_strategy == 'bfs':
-            self.logger.info(f"\n{'─' * 100}")
-            self.logger.info(f" BFS: EVALUATING BOTH CHILDREN WITH COLUMN GENERATION ".center(100, "─"))
-            self.logger.info(f"{'─' * 100}\n")
-
-            # Solve LEFT child
-            self.logger.info(f"[BFS] Solving LEFT child (Node {left_child.node_id})...")
-            left_bound, left_integral, left_frac, left_lambdas = self.solve_node_with_cg(
-                left_child, max_cg_iterations=50
-            )
-            left_child.lp_bound = left_bound
-            left_child.is_integral = left_integral
-            left_child.most_fractional_var = left_frac
-            self.logger.info(f"      → LP Bound: {left_bound:.6f}, Integral: {left_integral}")
-
-            # Solve RIGHT child
-            self.logger.info(f"\n[BFS] Solving RIGHT child (Node {right_child.node_id})...")
-            right_bound, right_integral, right_frac, right_lambdas = self.solve_node_with_cg(
-                right_child, max_cg_iterations=50
-            )
-            right_child.lp_bound = right_bound
-            right_child.is_integral = right_integral
-            right_child.most_fractional_var = right_frac
-            self.logger.info(f"      → LP Bound: {right_bound:.6f}, Integral: {right_integral}")
-
-            self.logger.info(f"\n{'─' * 100}")
-            self.logger.info(f" BOTH CHILDREN EVALUATED ".center(100, "─"))
-            self.logger.info(f"{'─' * 100}\n")
-
-            # Update stats
-            self.stats['nodes_explored'] += 2
-
-            # Check fathoming for LEFT child
-            if not self.should_fathom(left_child, left_lambdas):
-                # Add to open nodes with REAL bound
-                self.open_nodes.append((left_bound, left_child.node_id))
-                self.logger.info(f"  ✅ Left child (Node {left_child.node_id}) added to queue "
-                                 f"with bound {left_bound:.6f}")
-            else:
-                self.stats['nodes_fathomed'] += 1
-                self.logger.info(f"  🔪 Left child (Node {left_child.node_id}) fathomed: "
-                                 f"{left_child.fathom_reason}")
-
-            # Check fathoming for RIGHT child
-            if not self.should_fathom(right_child, right_lambdas):
-                # Add to open nodes with REAL bound
-                self.open_nodes.append((right_bound, right_child.node_id))
-                self.logger.info(f"  ✅ Right child (Node {right_child.node_id}) added to queue "
-                                 f"with bound {right_bound:.6f}")
-            else:
-                self.stats['nodes_fathomed'] += 1
-                self.logger.info(f"  🔪 Right child (Node {right_child.node_id}) fathomed: "
-                                 f"{right_child.fathom_reason}")
-
+            if left_child.lp_bound < float('inf'):
+                self.open_nodes.append((left_child.lp_bound, left_child.node_id))
+            if right_child.lp_bound < float('inf'):
+                self.open_nodes.append((right_child.lp_bound, right_child.node_id))
         else:  # DFS
             self.open_nodes.append(right_child.node_id)
             self.open_nodes.append(left_child.node_id)
-            self.logger.info(f"  [DFS] Children added to stack")
 
-        # Mark parent as branched
+        # Update parent status
         parent_node.status = 'branched'
-        self.stats['nodes_branched'] += 1
 
+        self.logger.info(f"  Created left child:  Node {left_child.node_id} (depth {left_child.depth})")
+        self.logger.info(f"  Created right child: Node {right_child.node_id} (depth {right_child.depth})")
         self.logger.info(f"{'=' * 100}\n")
 
-        return left_child, right_child
+        self.stats['nodes_branched'] += 1
 
+        return left_child, right_child
 
     def _solve_initial_lp(self, node):
         """
@@ -1836,57 +1835,36 @@ class BranchAndPrice:
         # EVALUATE AND STORE NODES
         # -------------------------
         if self.search_strategy == 'bfs':
-            self.logger.info(f"\n{'─' * 100}")
-            self.logger.info(f" BFS: EVALUATING BOTH CHILDREN WITH COLUMN GENERATION ".center(100, "─"))
-            self.logger.info(f"{'─' * 100}\n")
-
-            # Solve LEFT child
-            self.logger.info(f"[BFS] Solving LEFT child (Node {left_child.node_id})...")
-            left_bound, left_integral, left_frac, left_lambdas = self.solve_node_with_cg(
-                left_child, max_cg_iterations=50
-            )
+            # Solve initial LP to get a bound for node selection
+            self.logger.info("\n  [BFS] Evaluating child nodes...")
+            left_bound = self._solve_initial_lp(left_child)
+            right_bound = self._solve_initial_lp(right_child)
             left_child.lp_bound = left_bound
-            left_child.is_integral = left_integral
-            left_child.most_fractional_var = left_frac
-            self.logger.info(f"      → LP Bound: {left_bound:.6f}, Integral: {left_integral}")
-
-            # Solve RIGHT child
-            self.logger.info(f"\n[BFS] Solving RIGHT child (Node {right_child.node_id})...")
-            right_bound, right_integral, right_frac, right_lambdas = self.solve_node_with_cg(
-                right_child, max_cg_iterations=50
-            )
             right_child.lp_bound = right_bound
-            right_child.is_integral = right_integral
-            right_child.most_fractional_var = right_frac
-            self.logger.info(f"      → LP Bound: {right_bound:.6f}, Integral: {right_integral}")
+            self.logger.info(f"    - Left Child (Node {left_child.node_id}) initial LP bound: {left_bound:.4f}")
+            self.logger.info(f"    - Right Child (Node {right_child.node_id}) initial LP bound: {right_bound:.4f}")
 
-            self.logger.info(f"\n{'─' * 100}")
-            self.logger.info(f" BOTH CHILDREN EVALUATED ".center(100, "─"))
-            self.logger.info(f"{'─' * 100}\n")
+        # Store nodes in the main dictionary
+        self.nodes[left_child.node_id] = left_child
+        self.nodes[right_child.node_id] = right_child
 
-            # Update stats
-            self.stats['nodes_explored'] += 2
-
-            # Check fathoming and add to queue
-            if not self.should_fathom(left_child, left_lambdas):
-                self.open_nodes.append((left_bound, left_child.node_id))
-                self.logger.info(f"  ✅ Left child added with bound {left_bound:.6f}")
-            else:
-                self.stats['nodes_fathomed'] += 1
-                self.logger.info(f"  🔪 Left child fathomed: {left_child.fathom_reason}")
-
-            if not self.should_fathom(right_child, right_lambdas):
-                self.open_nodes.append((right_bound, right_child.node_id))
-                self.logger.info(f"  ✅ Right child added with bound {right_bound:.6f}")
-            else:
-                self.stats['nodes_fathomed'] += 1
-                self.logger.info(f"  🔪 Right child fathomed: {right_child.fathom_reason}")
-
+        # Add to open nodes list based on the search strategy
+        if self.search_strategy == 'bfs':
+            if left_child.lp_bound < float('inf'):
+                self.open_nodes.append((left_child.lp_bound, left_child.node_id))
+            if right_child.lp_bound < float('inf'):
+                self.open_nodes.append((right_child.lp_bound, right_child.node_id))
         else:  # DFS
+            # Add to open nodes (DFS: right first, then left, so left is processed first)
             self.open_nodes.append(right_child.node_id)
             self.open_nodes.append(left_child.node_id)
 
         parent_node.status = 'branched'
+
+        self.logger.info(f"  Created left child:  Node {left_child.node_id} (depth {left_child.depth})")
+        self.logger.info(f"  Created right child: Node {right_child.node_id} (depth {right_child.depth})")
+        self.logger.info(f"{'=' * 100}\n")
+
         self.stats['nodes_branched'] += 1
 
         return left_child, right_child
