@@ -65,7 +65,7 @@ def main():
     # Branch-and-Price settings
     use_branch_and_price = True  # Set to False for standard CG
     branching_strategy = 'sp'  # 'mp' for MP variable branching, 'sp' for SP variable branching
-    search_strategy = 'dfs' # 'dfs' for Depth-First, 'bfs' for Best-Fit-Search
+    search_strategy = 'bfs' # 'dfs' for Depth-First, 'bfs' for Best-Fit-Search
 
 
     # Visualization settings
