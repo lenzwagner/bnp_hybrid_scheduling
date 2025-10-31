@@ -13,7 +13,7 @@ from Utils.Pre_Patients.pre_patients_heuristic import *
 
 class ColumnGeneration:
     """
-    Column Generation class for solving patient scheduling problems.
+    Column Generation class for solving hybrid scheduling problems.
     Can be used standalone or as part of a Branch-and-Price framework.
     """
 
@@ -127,14 +127,12 @@ class ColumnGeneration:
         self.S_Bound = {}
         for p_idx in self.P_Join:
             self.S_Bound[p_idx] = max(10, math.ceil(
-                min((self.Req[p_idx] / self.W_coeff) + 2, max(self.D_Ext) - self.Entry[p_idx]) * (
-                            self.app_data["MS"][0] - self.app_data["MS_min"][0]) / self.app_data["MS"][0]))
+                min((self.Req[p_idx] / self.W_coeff) + 2, max(self.D_Ext) - self.Entry[p_idx]) * (self.app_data["MS"][0] - self.app_data["MS_min"][0]) / self.app_data["MS"][0]))
 
         # Create DataFrame
         print("[Setup] Creating data frame...")
         max_len = max(len(self.P), len(self.P_Pre), len(self.P_Post), len(self.P_F),
-                      len(self.P_Join), len(self.T), len(self.D), len(self.D_Full),
-                      len(self.D_Ext))
+                      len(self.P_Join), len(self.T), len(self.D), len(self.D_Full), len(self.D_Ext))
 
         self.data = pd.DataFrame({
             'P': self.P + [np.nan] * (max_len - len(self.P)),
@@ -159,10 +157,14 @@ class ColumnGeneration:
                 self.app_data['MS'][0], self.app_data['MS_min'][0],
                 self.Max_t, self.Nr_agg, self.therapist_to_type
             )
+
         print('Focus-Patients', self.P_F)
+        print('Nr-Agg', self.Nr_agg)
         print('len(Focus-Patients)', len(self.P_F))
+        print('Total Join-Patients', sum(self.Nr_agg[k] for k in sorted(self.P_F + self.P_Post)))
         print('Join-Patients', sorted(self.P_F + self.P_Post))
         print('len(Join-Patients)', len(sorted(self.P_F + self.P_Post)))
+
         # Build compact model
         print("[Setup] Building compact model...")
         self.problem = Problem_d(
@@ -242,7 +244,7 @@ class ColumnGeneration:
             master_start_time = time.time()
             self.master.solRelModel()
             current_lp_obj = self.master.Model.ObjVal
-            duals_td, duals_p = self.master.getDuals()
+            duals_pi, duals_gamma = self.master.getDuals()
             master_time = time.time() - master_start_time
 
             # Store LP objective history
@@ -250,7 +252,6 @@ class ColumnGeneration:
 
             # Check for dual improvement (stagnation detection)
             if itr == 1:
-                # First iteration - initialize best objective
                 self.best_lp_obj = current_lp_obj
                 improvement = 0.0
                 self.stagnation_counter = 0
@@ -266,7 +267,6 @@ class ColumnGeneration:
 
                 # Check if there's significant improvement
                 if relative_improvement > self.stagnation_threshold:
-                    # Good improvement - reset counter
                     self.stagnation_counter = 0
                     self.best_lp_obj = current_lp_obj
                     print(
@@ -289,7 +289,7 @@ class ColumnGeneration:
 
             # Pricing filter: determine which subproblems to solve
             patients_to_solve = self._apply_pricing_filter(
-                itr, pricing_filter_history, duals_td, duals_p, skipped_sp, skipped_sp_post
+                itr, pricing_filter_history, duals_pi, duals_gamma, skipped_sp, skipped_sp_post
             )
 
             if not patients_to_solve:
@@ -297,11 +297,10 @@ class ColumnGeneration:
                 break
 
             # Solve subproblems in parallel
-            print(
-                f"Starting subproblem solving for {len(patients_to_solve)} of {len(self.P_Join)} patients on {multiprocessing.cpu_count()} cores.")
+            print(f"Starting subproblem solving for {len(patients_to_solve)} of {len(self.P_Join)} patients on {multiprocessing.cpu_count()} cores.")
             subproblem_start_time = time.time()
             results_from_workers_with_time = self._solve_subproblems_parallel(
-                patients_to_solve, duals_p, duals_td
+                patients_to_solve, duals_gamma, duals_pi
             )
             subproblem_time = time.time() - subproblem_start_time
 
@@ -319,8 +318,8 @@ class ColumnGeneration:
             for index, reduced_cost in best_results_for_history.items():
                 current_duals = {
                     'bar_c': reduced_cost,
-                    'gamma_n': duals_p[index],
-                    'pi_td': duals_td.copy()
+                    'gamma_n': duals_gamma[index],
+                    'pi_td': duals_pi.copy()
                 }
                 pricing_filter_history[(index, itr)] = current_duals
 
@@ -349,8 +348,7 @@ class ColumnGeneration:
 
             # Check convergence
             if modelImprovable:
-                print(
-                    f"Added {new_cols_added_count} new columns in iteration {itr}. Highest index used: {max_idx_this_iteration}")
+                print(f"Added {new_cols_added_count} new columns in iteration {itr}. Highest index used: {max_idx_this_iteration}")
                 self.master.Model.update()
                 next_base_col_idx = max_idx_this_iteration + 1
             else:
@@ -368,7 +366,7 @@ class ColumnGeneration:
         else:
             print(f"\nColumn Generation finished after {itr} iterations (convergence).")
 
-    def _apply_pricing_filter(self, itr, pricing_filter_history, duals_td, duals_p,
+    def _apply_pricing_filter(self, itr, pricing_filter_history, duals_pi, duals_gamma,
                               skipped_sp, skipped_sp_post):
         """
         Apply pricing filter to determine which subproblems need to be solved.
@@ -384,8 +382,8 @@ class ColumnGeneration:
                 if previous_iterations:
                     ell = max(previous_iterations)
                     hist = pricing_filter_history[(index, ell)]
-                    lb = hist['bar_c'] + hist['gamma_n'] - duals_p[index]
-                    sum_term = sum(min(0, hist['pi_td'].get(key, 0) - duals_td.get(key, 0))
+                    lb = hist['bar_c'] + hist['gamma_n'] - duals_gamma[index]
+                    sum_term = sum(min(0, hist['pi_td'].get(key, 0) - duals_pi.get(key, 0))
                                    for key in hist['pi_td'])
                     lb += sum_term
 
@@ -402,13 +400,18 @@ class ColumnGeneration:
 
         return patients_to_solve
 
-    def _solve_subproblems_parallel(self, patients_to_solve, duals_p, duals_td):
+    def _solve_subproblems_parallel(self, patients_to_solve, duals_gamma, duals_pi):
         """
         Solve subproblems in parallel using multiprocessing.
         """
+        duals_delta = 0
+        node_path = ''  # Root node
+
         tasks_args = [
-            (index, duals_p, duals_td, self.data, self.Req_agg, self.Entry_agg,
-             self.app_data, self.W_coeff, self.E_dict, self.therapist_type, self.P_F, self.S_Bound, self.learn_method)
+            (index, duals_gamma, duals_pi, duals_delta,
+             self.data, self.Req_agg, self.Entry_agg,
+             self.app_data, self.W_coeff, self.E_dict, self.therapist_type,
+             self.P_F, self.S_Bound, self.learn_method, node_path)
             for index in patients_to_solve
         ]
 
@@ -543,9 +546,6 @@ class ColumnGeneration:
         print(f"Is integral? {self.is_integral}")
         print(f"Compact model objective: {self.problem.Model.objVal:.5f}")
 
-        print("\n[Results] Active lambda variables:")
-        self.master.printLambda()
-
         print("\n[Results] Length of stay (LOS) for focus patients:")
         self.problem.printLOS()
 
@@ -580,7 +580,6 @@ class ColumnGeneration:
             'compact_obj': self.problem.Model.objVal
         }
 
-
 def solve_subproblem_for_patient(args):
     """
     Worker function: Solves the subproblem for a patient and returns up to 10
@@ -589,13 +588,13 @@ def solve_subproblem_for_patient(args):
     worker_start_time = time.time()
 
     # Unpack arguments
-    (index, duals_p, duals_td, data, Req_agg, Entry_agg, app_data, W_coeff,
-     E_dict, therapist_type, P_F, S_Bound, learn_meth) = args
+    (index, duals_gamma, duals_pi, duals_delta, data, Req_agg, Entry_agg, app_data, W_coeff,
+     E_dict, therapist_type, P_F, S_Bound, learn_meth, node_path) = args
     max_cols_per_iter = 10
 
     # Create and solve subproblem
     subproblem = Subproblem(
-        data, duals_p, duals_td, index, 0, Req_agg, Entry_agg,
+        data, duals_gamma, duals_pi, duals_delta, index, 0, Req_agg, Entry_agg,
         app_data, W_coeff, E_dict, S_Bound, num_tangents=10, reduction=True, learn_method=learn_meth,  node_path=''
     )
     subproblem.buildModel()
