@@ -1,3 +1,4 @@
+import sys
 from abc import ABC, abstractmethod
 import gurobipy as gu
 
@@ -13,12 +14,14 @@ class BranchingConstraint(ABC):
     """
 
     @abstractmethod
-    def apply_to_master(self, master):
+    @abstractmethod
+    def apply_to_master(self, master, node):
         """
         Apply this constraint to the master problem.
 
         Args:
             master: MasterProblem_d instance
+            node: BnPNode instance (for accessing column_pool)
         """
         pass
 
@@ -45,27 +48,10 @@ class BranchingConstraint(ABC):
         """
         pass
 
-    @abstractmethod
-    def get_dual_contribution(self, for_profile):
-        """
-        Get the dual variable contribution for pricing.
-
-        Args:
-            for_profile: Profile index of the subproblem being priced
-
-        Returns:
-            float: Contribution to reduced cost from this constraint's dual
-        """
-        pass
-
 
 class SPVariableBranching(BranchingConstraint):
     """
     Branching on Subproblem Variable x_{njt}
-
-    Based on Paper Section 3.2.4, Equations (branch:sub2) and (branch:sub3):
-    - Left branch:  x_{njt} = 0  (no assignment of profile n to agent j in period t)
-    - Right branch: x_{njt} = 1  (force assignment of profile n to agent j in period t)
 
     Master Problem Impact (Equation branch:sub2):
     - Left:  sum_{a: chi^a_{njt}=1} Lambda_{na} <= floor(beta)
@@ -79,65 +65,66 @@ class SPVariableBranching(BranchingConstraint):
         profile: Profile index n
         agent: Agent index j (or therapist type if aggregated)
         period: Period index t
-        value: 0 for left branch, 1 for right branch
         level: Level in search tree (for dual variable tracking)
         dual_left: Dual variable for left constraint (delta^L_{nl})
         dual_right: Dual variable for right constraint (delta^R_{nl})
+        master_constraint: Reference to restored cosntraint
     """
 
-    def __init__(self, profile_n, agent_j, period_t, value, level):
+    def __init__(self, profile_n, agent_j, period_t, dir, level,
+                 floor_val, ceil_val):
         self.profile = profile_n
         self.agent = agent_j
         self.period = period_t
-        self.value = value  # 0 for left, 1 for right
-        self.level = level  # Tree level for delta dual tracking
+        self.level = level
+        self.dir = dir
+        self.floor = floor_val
+        self.ceil = ceil_val
         self.dual_left = 0.0
         self.dual_right = 0.0
-        self.master_constraint = None  # Store reference to created constraint
+        self.master_constraint = None
 
-    def apply_to_master(self, master):
-        """
-        Add constraint to master problem.
-
-        Paper Equation (branch:sub2):
-        Left:  sum_{a: chi^a_{njt}=1} Lambda_{na} <= floor(beta)
-        Right: sum_{a: chi^a_{njt}=1} Lambda_{na} >= ceil(beta)
-
-        For simplicity in Phase 2, we implement:
-        Left:  sum_{a: chi^a_{njt}=1} Lambda_{na} = 0  (no assignment allowed)
-        Right: sum_{a: chi^a_{njt}=1} Lambda_{na} >= 1  (at least one assignment)
-        """
+    def apply_to_master(self, master, node):
+        """Add constraint to master and set coefficients for initial columns."""
         n, j, t = self.profile, self.agent, self.period
 
-        # Find all columns for profile n where chi^a_{njt} = 1
+        # Find relevant columns
         relevant_columns = []
-        for a in master.A:
-            # Check if this column assigns profile n to agent j in period t
-            # master.all_schedules stores: {(p, j, t, a): value}
-            if master.all_schedules.get((n, j, t, a), 0) == 1:
+        for (p, a), col_data in node.column_pool.items():
+            if p != n:
+                continue
+
+            schedules_x = col_data.get('schedules_x', {})
+            assignment_key = (n, j, t, 0)
+
+            if assignment_key in schedules_x and schedules_x[assignment_key] > 0.5:
                 relevant_columns.append(a)
-        print('Rel Col', relevant_columns)
 
         if not relevant_columns:
-            # No relevant columns yet, constraint is trivially satisfied
             return
 
-        # Create constraint expression
+        # Create constraint
         lhs = gu.quicksum(master.lmbda[n, a] for a in relevant_columns if (n, a) in master.lmbda)
-        print('LHS', lhs)
 
-        if self.value == 0:  # Left branch: no assignment
+        if self.dir == 'left':
             self.master_constraint = master.Model.addConstr(
-                lhs == 0,
+                lhs <= self.floor,
                 name=f"sp_branch_L{self.level}_{n}_{j}_{t}"
             )
-        else:  # Right branch: force assignment (value == 1)
+        else:
             self.master_constraint = master.Model.addConstr(
-                lhs >= 1,
+                lhs >= self.ceil,
                 name=f"sp_branch_R{self.level}_{n}_{j}_{t}"
             )
 
         master.Model.update()
+
+        # Set coefficients for EXISTING initial column (col_id=1)
+        if (n, 1) in master.lmbda:
+            if 1 in relevant_columns:
+                master.Model.chgCoeff(self.master_constraint, master.lmbda[n, 1], 1)
+                print(f"    [SP Branch] Set coefficient for Lambda[{n},1] in constraint")
+
 
     def apply_to_subproblem(self, subproblem):
         """
@@ -148,86 +135,41 @@ class SPVariableBranching(BranchingConstraint):
         - Right: x_{njt} = 1
         """
         if subproblem.P != self.profile:
-            return  # Not relevant for this subproblem
+            return
 
         # Key format in subproblem: x[p, j, t, iteration]
         var_key = (self.profile, self.agent, self.period, subproblem.itr)
 
         if var_key in subproblem.x:
-            # Fix variable to branching value
-            subproblem.x[var_key].LB = self.value
-            subproblem.x[var_key].UB = self.value
+            if self.dir == 'left':
+                subproblem.x[var_key].LB = 0
+                subproblem.x[var_key].UB = 0
+            else:
+                subproblem.x[var_key].LB = 1
+                subproblem.x[var_key].UB = 1
             subproblem.Model.update()
 
     def is_column_compatible(self, column_data):
         """
-        Check if column's assignment chi^a_{njt} matches the constraint.
+        SP variable branching: All columns are compatible!
 
-        Args:
-            column_data: Dict with keys 'index', 'schedules_x', etc.
-
-        Returns:
-            bool: True if compatible
-        """
-        if column_data.get('index') != self.profile:
-            return True  # Not relevant for other profiles
-
-        # Check the assignment in schedules_x
-        # schedules_x format: {(p, j, t, a): value}
-        schedule = column_data.get('schedules_x', {})
-
-        # Look for assignment (profile, agent, period, *)
-        for (p, j, t, a), val in schedule.items():
-            if p == self.profile and j == self.agent and t == self.period:
-                # Found the assignment, check if it matches constraint
-                return (val == self.value)
-
-        # If not found in schedule, it's implicitly 0
-        return (self.value == 0)
-
-    def get_dual_contribution(self, for_profile):
-        """
-        Get dual contribution for pricing objective.
-
-        IMPORTANT: This dual is only relevant for the specific profile n
-        that this constraint applies to. Other profiles are unaffected.
-
-        Paper Equation (branch:sub4):
-        For SP_n: Reduced cost includes: - sum_{l in L(n)} (delta^L_{nl} + delta^R_{nl})
-        For SP_m (m != n): No contribution
-
-        Args:
-            for_profile: Profile index of the subproblem being priced
+        The master constraint regulates usage.
+        Column filtering is not necessary and can lead to bugs.
 
         Returns:
-            float: -(delta^L + delta^R) if for_profile == self.profile, else 0.0
+            bool: Always True
         """
-        # Only apply to the specific profile this constraint was created for
-        if for_profile != self.profile:
-            return 0.0
 
-        if self.master_constraint is None:
-            return 0.0
-
-        # Get dual value from master constraint
-        try:
-            dual_val = self.master_constraint.Pi
-            return -dual_val  # Negative because it's subtracted in reduced cost
-        except:
-            return 0.0
+        return True
 
     def __repr__(self):
         return (f"SPBranch(profile={self.profile}, agent={self.agent}, "
-                f"period={self.period}, x={self.value}, level={self.level})")
+                f"period={self.period}, level={self.level})")
 
 
 class MPVariableBranching(BranchingConstraint):
     """
     Branching on Master Problem Variable Lambda_{na}
-
-    Based on Paper Section 3.2.4, Equation (branch_mp1):
-    - Left branch:  Lambda_{na} <= floor(Lambda_hat)
-    - Right branch: Lambda_{na} >= ceil(Lambda_hat)
 
     Master Problem Impact:
     - Simply set variable bounds on Lambda_{na}
@@ -247,32 +189,24 @@ class MPVariableBranching(BranchingConstraint):
     def __init__(self, profile_n, column_a, bound, direction, original_schedule=None):
         self.profile = profile_n
         self.column = column_a
-        self.bound = bound  # floor or ceil of Lambda
-        self.direction = direction  # 'left' or 'right'
-        self.original_schedule = original_schedule  # For no-good cut
+        self.bound = bound
+        self.direction = direction
+        self.original_schedule = original_schedule
 
-    def apply_to_master(self, master):
+    def apply_to_master(self, master, node):
         """
         Set variable bounds on Lambda_{na}.
-
-        Left:  Lambda_{na} <= floor(Lambda_hat)
-        Right: Lambda_{na} >= ceil(Lambda_hat)
-
-        The variable MUST exist in the master!
         """
         var = master.lmbda.get((self.profile, self.column))
 
         if var is None:
-            # This should NEVER happen with correct column inheritance
             print(f"    ❌ ERROR: Variable Lambda[{self.profile},{self.column}] not found in master!")
-            print(f"       This indicates the column was incorrectly filtered during inheritance.")
-            print(f"       MP branching requires the column to exist so we can set bounds!")
             return
 
         # Set bounds
         if self.direction == 'left':
             master.set_branching_bound(var, 'ub', self.bound)
-        else:  # right
+        else:
             master.set_branching_bound(var, 'lb', self.bound)
 
         master.Model.update()
@@ -286,10 +220,10 @@ class MPVariableBranching(BranchingConstraint):
         sum_{(j,t): chi^a_{njt}=1} (1-x_{njt}) + sum_{(j,t): chi^a_{njt}=0} x_{njt} >= 1
         """
         if subproblem.P != self.profile:
-            return  # Not relevant for other profiles
+            return
 
         if self.direction == 'right':
-            return  # No SP modification needed on right branch
+            return
 
         # Left branch: Add no-good cut
         if self.original_schedule is None or len(self.original_schedule) == 0:
@@ -302,7 +236,7 @@ class MPVariableBranching(BranchingConstraint):
 
         # Build no-good constraint
         terms = []
-        schedule_pattern = []  # For debugging
+        schedule_pattern = []
 
         for (p, j, t, a_orig), chi_value in self.original_schedule.items():
             if p != self.profile:
@@ -315,11 +249,9 @@ class MPVariableBranching(BranchingConstraint):
             x_var = subproblem.x[var_key]
 
             if chi_value == 1:
-                # Position where chi was 1 must be different
                 terms.append(1 - x_var)
                 schedule_pattern.append(f"x[{j},{t}]=1")
             else:
-                # Position where chi was 0 must be different
                 terms.append(x_var)
                 schedule_pattern.append(f"x[{j},{t}]=0")
 
@@ -348,24 +280,8 @@ class MPVariableBranching(BranchingConstraint):
         Returns:
             bool: Always True for MP branching (columns are not filtered)
         """
-        # MP branching doesn't filter columns - only sets variable bounds
+
         return True
-
-    def get_dual_contribution(self, for_profile):
-        """
-        Get dual contribution for pricing objective.
-
-        MP variable branching only affects existing columns via bounds.
-        These bounds are handled in the dual space naturally by Gurobi,
-        so no explicit contribution to reduced cost is needed.
-
-        Args:
-            for_profile: Profile index (not used for MP branching)
-
-        Returns:
-            float: 0.0
-        """
-        return 0.0
 
     def __repr__(self):
         return (f"MPBranch(profile={self.profile}, column={self.column}, "
