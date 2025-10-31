@@ -439,7 +439,6 @@ class BranchAndPrice:
                     for (p, a), var in master.lmbda.items():
                         if var.X > 0:
                             lambda_assignments[(p, a)] = var.X
-                            print(f"Benesss ({p,a}): {var.X}")
 
                     self.incumbent_lambdas = lambda_assignments
 
