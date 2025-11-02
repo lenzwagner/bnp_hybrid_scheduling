@@ -9,6 +9,7 @@ from Utils.Generell.instance_setup import *
 from Utils.initial_cg_sol import *
 from Utils.Generell.plots import *
 from Utils.Pre_Patients.pre_patients_heuristic import *
+import sys
 
 
 class ColumnGeneration:
@@ -620,6 +621,8 @@ def solve_subproblem_for_patient(args):
             reducedCost = subproblem.Model.PoolObjVal
 
             if reducedCost < -threshold:
+                print(f'Red: {reducedCost} for index {index}')
+
                 schedules_x, x_list, _ = subproblem.getOptVals('x')
                 schedules_x_tuple = tuple(sorted(schedules_x.items()))
 
